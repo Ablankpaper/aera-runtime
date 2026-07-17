@@ -64,6 +64,12 @@ jobs:
     with:
       slice_count: 8
 
+  agentera-compatibility:
+    name: AgentEra compatibility
+    needs: detect
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.ci_review == 'true'
+    uses: ./.github/workflows/agentera-compatibility.yml
+
   lint:
     name: Python lints
     needs: detect
@@ -147,6 +153,7 @@ jobs:
     name: All required checks pass
     needs:
       - tests
+      - agentera-compatibility
       - lint
       - js-tests
       - docs-site
