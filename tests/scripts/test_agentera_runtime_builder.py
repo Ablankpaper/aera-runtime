@@ -167,6 +167,7 @@ def test_builder_uses_locked_native_flow_and_emits_smoked_archive(
     assert "--no-dev" in export
     assert "--require-hashes" in install
     assert "--no-deps" in install
+    assert "--break-system-packages" in install
 
 
 @pytest.mark.parametrize(

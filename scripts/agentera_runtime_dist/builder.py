@@ -355,6 +355,7 @@ def _install_locked_runtime(
         "--python",
         str(copied_python),
         "--no-python-downloads",
+        "--break-system-packages",
         "--link-mode",
         "copy",
         "--no-cache",
