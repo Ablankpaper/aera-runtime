@@ -124,6 +124,10 @@ def test_release_graph_uses_native_targets_and_exact_toolchains():
         assert "3.11.15" in text
         assert '"node-version": "22"' in text
         assert "build_agentera_runtime_seed.py" in text
+        assert (
+            "uv python find --no-project --managed-python --resolve-links 3.11.15"
+            in text
+        )
         setup_node = next(
             step for step in native_job["steps"] if step.get("name") == "Install Node.js 22"
         )
