@@ -177,6 +177,23 @@ def test_public_certificate_pem_is_allowed(seed_root: Path):
     assert_seed_allowlist(seed_root, build_inventory(seed_root))
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "python/lib/site-packages/googleapiclient/discovery_cache/__init__.py",
+        "python/lib/site-packages/provider/models/schema.py",
+    ],
+)
+def test_runtime_code_directories_that_resemble_artifact_names_are_allowed(
+    seed_root: Path, relative_path: str
+):
+    module = seed_root / relative_path
+    module.parent.mkdir(parents=True)
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+
+    assert_seed_allowlist(seed_root, build_inventory(seed_root))
+
+
 def test_allowlist_rejects_unexpected_top_level_content(seed_root: Path):
     (seed_root / "README.md").write_text("unexpected", encoding="utf-8")
 

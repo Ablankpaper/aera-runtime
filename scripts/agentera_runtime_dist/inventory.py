@@ -49,9 +49,7 @@ _PROHIBITED_SEGMENTS = frozenset({
     "webkit",
     "ms-playwright",
     "playwright-browsers",
-    "models",
     "model-weights",
-    "checkpoints",
 })
 _PROHIBITED_FILENAMES = frozenset({
     ".env",
@@ -282,7 +280,7 @@ def _assert_entry_is_allowed(
 def _is_prohibited_segment(segment: str) -> bool:
     return (
         segment in _PROHIBITED_SEGMENTS
-        or segment.endswith(("-cache", "_cache", ".cache"))
+        or segment.endswith(("-cache", ".cache"))
         or segment.startswith(_BROWSER_SEGMENT_PREFIXES)
     )
 
