@@ -282,7 +282,17 @@ def _require_frontend_assets(repo_root: Path) -> None:
 
 def _build_wheel(repo_root: Path, wheelhouse: Path, runner: CommandRunner) -> Path:
     wheelhouse.mkdir(parents=True)
-    runner(("uv", "build", "--wheel", "--out-dir", str(wheelhouse)), cwd=repo_root)
+    generated_build = repo_root / "build"
+    if generated_build.exists() or generated_build.is_symlink():
+        raise BuildError("source build directory must not exist before wheel assembly")
+    try:
+        runner(
+            ("uv", "build", "--wheel", "--out-dir", str(wheelhouse)),
+            cwd=repo_root,
+        )
+    finally:
+        if generated_build.exists() and not generated_build.is_symlink():
+            shutil.rmtree(generated_build)
     wheels = sorted(wheelhouse.glob("*.whl"))
     if len(wheels) != 1:
         raise BuildError("Runtime build must produce exactly one Hermes wheel")

@@ -109,6 +109,9 @@ class FakeRunner:
                 "",
             )
         if command[:3] == ("uv", "build", "--wheel"):
+            generated = self.source_tree / "build" / "generated.txt"
+            generated.parent.mkdir()
+            generated.write_text("setuptools build output", encoding="utf-8")
             output_dir = Path(command[command.index("--out-dir") + 1])
             output_dir.mkdir(parents=True, exist_ok=True)
             wheel = output_dir / "hermes_agent-0.18.2-py3-none-any.whl"
@@ -152,6 +155,7 @@ def test_builder_uses_locked_native_flow_and_emits_smoked_archive(
     assert result.archive_path.name.endswith("-darwin-arm64.tar.zst")
     assert result.archive_path.is_file()
     assert result.build_metadata_path.is_file()
+    assert not (source_tree / "build").exists()
     assert len(smoked) == 1
     assert smoked[0].name == "agentera-runtime"
     commands = [command for command, _cwd in runner.calls]
