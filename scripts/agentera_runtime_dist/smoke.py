@@ -319,6 +319,8 @@ def _smoke_environment(
 ) -> dict[str, str]:
     env = {
         "HOME": str(fake_home),
+        "USERPROFILE": str(fake_home),
+        "LOCALAPPDATA": str(fake_home / "AppData" / "Local"),
         "HERMES_HOME": str(boundary),
         "HERMES_BUNDLED_SKILLS": str(seed_root / "python" / "skills"),
         "HERMES_OPTIONAL_SKILLS": str(seed_root / "python" / "optional-skills"),

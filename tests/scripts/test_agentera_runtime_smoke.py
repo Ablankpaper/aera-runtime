@@ -104,6 +104,17 @@ def test_smoke_runs_required_probes_without_changing_boundary(seed_root: Path):
     assert snapshot_tree(boundary)
 
 
+def test_smoke_uses_disposable_windows_home_environment(seed_root: Path):
+    runner = RecordingSmokeRunner()
+
+    run_seed_smoke(seed_root, runner=runner)
+
+    env = runner.calls[0][1]
+    fake_home = Path(env["HOME"])
+    assert Path(env["USERPROFILE"]) == fake_home
+    assert Path(env["LOCALAPPDATA"]) == fake_home / "AppData" / "Local"
+
+
 def test_smoke_fails_if_hermes_boundary_changes(seed_root: Path):
     with pytest.raises(SmokeError, match=r"HERMES_HOME.*MEMORY\.md"):
         run_seed_smoke(
