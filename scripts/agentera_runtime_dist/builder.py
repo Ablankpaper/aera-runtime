@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import configparser
 import hashlib
 import json
 import os
@@ -46,6 +47,13 @@ _POSIX_RELATIVE_PYTHON_HEADER = (
     b"#!/bin/sh\n'''exec' \"$(dirname \"$0\")/python3\" \"$0\" \"$@\"\n' '''\n"
 )
 _NON_RUNTIME_INSTALL_METADATA = frozenset({"direct_url.json", "uv_cache.json"})
+_WINDOWS_ENTRYPOINT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_PYTHON_OBJECT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z")
+
+
+class _EntryPointConfigParser(configparser.ConfigParser):
+    def optionxform(self, optionstr: str) -> str:
+        return optionstr
 
 
 class BuildError(RuntimeError):
@@ -473,11 +481,18 @@ def _site_packages(python_root: Path) -> Path:
 
 
 def normalize_installed_runtime(python_root: Path) -> None:
-    """Remove install-host state and make generated POSIX scripts relocatable."""
+    """Remove install-host state and make generated scripts relocatable."""
 
     python_root = Path(python_root).resolve(strict=True)
-    _normalize_posix_python_scripts(python_root / "bin")
     site_packages = _site_packages(python_root)
+    additional_record_paths: dict[Path, tuple[str, ...]] = {}
+    windows_scripts = python_root / "Scripts"
+    if windows_scripts.is_dir():
+        additional_record_paths = _normalize_windows_console_scripts(
+            windows_scripts, site_packages
+        )
+    else:
+        _normalize_posix_python_scripts(python_root / "bin")
     for dist_info in sorted(site_packages.glob("*.dist-info")):
         for name in _NON_RUNTIME_INSTALL_METADATA:
             metadata = dist_info / name
@@ -485,7 +500,12 @@ def normalize_installed_runtime(python_root: Path) -> None:
                 metadata.unlink()
         record = dist_info / "RECORD"
         if record.is_file():
-            _regenerate_record(record, site_packages, python_root)
+            _regenerate_record(
+                record,
+                site_packages,
+                python_root,
+                additional_record_paths.get(record, ()),
+            )
 
 
 def _normalize_posix_python_scripts(scripts_dir: Path) -> None:
@@ -512,7 +532,108 @@ def _normalize_posix_python_scripts(scripts_dir: Path) -> None:
                 ) from exc
 
 
-def _regenerate_record(record: Path, site_packages: Path, python_root: Path) -> None:
+def _normalize_windows_console_scripts(
+    scripts_dir: Path, site_packages: Path
+) -> dict[Path, tuple[str, ...]]:
+    owners: dict[str, str] = {}
+    record_paths: dict[Path, list[str]] = {}
+    for dist_info in sorted(site_packages.glob("*.dist-info")):
+        entry_points_path = dist_info / "entry_points.txt"
+        if not entry_points_path.is_file():
+            continue
+        parser = _EntryPointConfigParser(interpolation=None, delimiters=("=",))
+        try:
+            with entry_points_path.open(encoding="utf-8") as handle:
+                parser.read_file(handle)
+        except (OSError, UnicodeError, configparser.Error) as exc:
+            raise BuildError(
+                f"cannot read installed entry points: {dist_info.name}"
+            ) from exc
+        for group in ("console_scripts", "gui_scripts"):
+            if not parser.has_section(group):
+                continue
+            for raw_name, raw_value in parser.items(group):
+                name = raw_name.strip()
+                value = raw_value.split("[", 1)[0].strip()
+                module, separator, attribute = value.partition(":")
+                module = module.strip()
+                attribute = attribute.strip()
+                if (
+                    not _WINDOWS_ENTRYPOINT_NAME_RE.fullmatch(name)
+                    or not separator
+                    or not _PYTHON_OBJECT_RE.fullmatch(module)
+                    or not _PYTHON_OBJECT_RE.fullmatch(attribute)
+                ):
+                    raise BuildError(
+                        f"unsupported installed entry point: {dist_info.name}:{name}"
+                    )
+                key = name.casefold()
+                previous = owners.get(key)
+                if previous is not None:
+                    raise BuildError(
+                        f"duplicate installed entry point: {name} ({previous}, "
+                        f"{dist_info.name})"
+                    )
+                owners[key] = dist_info.name
+                generated = _write_windows_entrypoint(
+                    scripts_dir, name=name, module=module, attribute=attribute
+                )
+                record = dist_info / "RECORD"
+                record_paths.setdefault(record, []).extend(
+                    _relative_record_path(site_packages, path) for path in generated
+                )
+    return {record: tuple(sorted(paths)) for record, paths in record_paths.items()}
+
+
+def _write_windows_entrypoint(
+    scripts_dir: Path, *, name: str, module: str, attribute: str
+) -> tuple[Path, Path]:
+    removable = {
+        f"{name}.cmd",
+        f"{name}.exe",
+        f"{name}.exe.manifest",
+        f"{name}-script.py",
+    }
+    removable_casefold = {item.casefold() for item in removable}
+    for candidate in scripts_dir.iterdir():
+        if candidate.name.casefold() not in removable_casefold:
+            continue
+        if candidate.is_dir() and not candidate.is_symlink():
+            raise BuildError(f"installed entry point is a directory: {candidate.name}")
+        candidate.unlink()
+
+    python_script = scripts_dir / f"{name}-script.py"
+    python_script.write_text(
+        "from importlib import import_module\n"
+        "\n"
+        f"target = import_module({module!r})\n"
+        f"for part in {attribute!r}.split('.'):\n"
+        "    target = getattr(target, part)\n"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(target())\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    command_script = scripts_dir / f"{name}.cmd"
+    command_script.write_text(
+        f'@echo off\r\n"%~dp0..\\python.exe" "%~dp0{name}-script.py" %*\r\n',
+        encoding="utf-8",
+        newline="",
+    )
+    return command_script, python_script
+
+
+def _relative_record_path(site_packages: Path, target: Path) -> str:
+    return Path(os.path.relpath(target, start=site_packages)).as_posix()
+
+
+def _regenerate_record(
+    record: Path,
+    site_packages: Path,
+    python_root: Path,
+    additional_paths: Sequence[str] = (),
+) -> None:
     try:
         with record.open(encoding="utf-8", newline="") as handle:
             original_rows = list(csv.reader(handle))
@@ -521,7 +642,8 @@ def _regenerate_record(record: Path, site_packages: Path, python_root: Path) -> 
 
     record_resolved = record.resolve(strict=True)
     rows_by_path: dict[str, list[str]] = {}
-    for row in original_rows:
+    rows = [*original_rows, *([path, "", ""] for path in additional_paths)]
+    for row in rows:
         if len(row) != 3 or not row[0]:
             raise BuildError(f"invalid installed RECORD: {record.parent.name}")
         relative = PurePosixPath(row[0])

@@ -355,3 +355,70 @@ def test_installed_runtime_normalization_is_relocatable_and_deterministic(
         str(first_script.stat().st_size),
     ]
     assert rows[1] == ["hermes_agent-0.18.2.dist-info/RECORD", "", ""]
+
+
+def _write_nondeterministic_windows_entrypoint(
+    python_root: Path, *, temporary_prefix: Path, installed_at: str
+) -> Path:
+    scripts = python_root / "Scripts"
+    scripts.mkdir(parents=True)
+    launcher = scripts / "hermes.exe"
+    launcher.write_bytes(b"MZ" + str(temporary_prefix).encode() + b"\0python.exe")
+
+    site_packages = python_root / "Lib" / "site-packages"
+    dist_info = site_packages / "hermes_agent-0.18.2.dist-info"
+    dist_info.mkdir(parents=True)
+    (dist_info / "entry_points.txt").write_text(
+        "[console_scripts]\nhermes = hermes_cli.main:main\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (dist_info / "direct_url.json").write_text(
+        json.dumps({"url": temporary_prefix.as_uri()}), encoding="utf-8"
+    )
+    (dist_info / "uv_cache.json").write_text(
+        json.dumps({"timestamp": installed_at}), encoding="utf-8"
+    )
+    (dist_info / "RECORD").write_text(
+        "../../Scripts/hermes.exe,sha256=stale,1\n"
+        "hermes_agent-0.18.2.dist-info/direct_url.json,sha256=stale,1\n"
+        "hermes_agent-0.18.2.dist-info/entry_points.txt,sha256=stale,1\n"
+        "hermes_agent-0.18.2.dist-info/uv_cache.json,sha256=stale,1\n"
+        "hermes_agent-0.18.2.dist-info/RECORD,,\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return dist_info
+
+
+def test_windows_console_scripts_are_rebuilt_without_install_paths(tmp_path: Path):
+    first_root = tmp_path / "first-windows" / "python"
+    second_root = tmp_path / "second-windows" / "python"
+    first_dist = _write_nondeterministic_windows_entrypoint(
+        first_root,
+        temporary_prefix=tmp_path / "windows-build-a",
+        installed_at="2026-07-18T01:02:03Z",
+    )
+    second_dist = _write_nondeterministic_windows_entrypoint(
+        second_root,
+        temporary_prefix=tmp_path / "windows-build-b",
+        installed_at="2027-08-19T04:05:06Z",
+    )
+
+    normalize_installed_runtime(first_root)
+    normalize_installed_runtime(second_root)
+
+    for relative in ("hermes.cmd", "hermes-script.py"):
+        first = first_root / "Scripts" / relative
+        second = second_root / "Scripts" / relative
+        assert first.read_bytes() == second.read_bytes()
+        assert str(tmp_path).encode() not in first.read_bytes()
+    assert not (first_root / "Scripts" / "hermes.exe").exists()
+
+    record = (first_dist / "RECORD").read_text(encoding="utf-8")
+    assert "../../Scripts/hermes.exe" not in record
+    assert "../../Scripts/hermes.cmd" in record
+    assert "../../Scripts/hermes-script.py" in record
+    assert not (first_dist / "direct_url.json").exists()
+    assert not (first_dist / "uv_cache.json").exists()
+    assert (first_dist / "RECORD").read_bytes() == (second_dist / "RECORD").read_bytes()
