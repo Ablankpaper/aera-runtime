@@ -58,8 +58,11 @@ def seed_root(tmp_path: Path) -> Path:
 
 
 class RecordingSmokeRunner:
-    def __init__(self, *, mutate: bool = False) -> None:
+    def __init__(
+        self, *, mutate: bool = False, write_operational_state: bool = False
+    ) -> None:
         self.mutate = mutate
+        self.write_operational_state = write_operational_state
         self.calls: list[tuple[tuple[str, ...], Mapping[str, str]]] = []
 
     def __call__(
@@ -76,6 +79,11 @@ class RecordingSmokeRunner:
             Path(env["HERMES_HOME"], "MEMORY.md").write_text(
                 "changed", encoding="utf-8"
             )
+        if self.write_operational_state:
+            home = Path(env["HERMES_HOME"])
+            (home / "logs").mkdir(exist_ok=True)
+            (home / "logs" / "agent.log").write_text("smoke log\n", encoding="utf-8")
+            (home / ".update_check").write_text("{}", encoding="utf-8")
         return SmokeCommandResult("ok\n", "")
 
 
@@ -97,12 +105,20 @@ def test_smoke_runs_required_probes_without_changing_boundary(seed_root: Path):
 
 
 def test_smoke_fails_if_hermes_boundary_changes(seed_root: Path):
-    with pytest.raises(SmokeError, match="HERMES_HOME"):
+    with pytest.raises(SmokeError, match=r"HERMES_HOME.*MEMORY\.md"):
         run_seed_smoke(
             seed_root,
             runner=RecordingSmokeRunner(mutate=True),
             hermes_home=seed_root.parent / "boundary",
         )
+
+
+def test_smoke_allows_only_disposable_logs_and_update_cache(seed_root: Path):
+    run_seed_smoke(
+        seed_root,
+        runner=RecordingSmokeRunner(write_operational_state=True),
+        hermes_home=seed_root.parent / "boundary",
+    )
 
 
 def test_safe_extraction_reconstructs_seed(seed_root: Path, tmp_path: Path):

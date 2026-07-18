@@ -127,7 +127,7 @@ def run_seed_smoke(
             Path(hermes_home) if hermes_home is not None else sandbox / "hermes-home"
         )
         _create_boundary_fixture(boundary)
-        before = snapshot_tree(boundary)
+        before = _boundary_data_snapshot(boundary)
         guard = sandbox / "network-guard"
         guard.mkdir()
         (guard / "sitecustomize.py").write_text(_NETWORK_GUARD, encoding="utf-8")
@@ -154,11 +154,9 @@ def run_seed_smoke(
                 raise SmokeError(
                     f"Runtime smoke command failed: {command[1:]}"
                 ) from exc
-        after = snapshot_tree(boundary)
+        after = _boundary_data_snapshot(boundary)
         if after != before:
-            raise SmokeError(
-                "Runtime smoke test changed the synthetic HERMES_HOME boundary"
-            )
+            raise SmokeError(_boundary_change_message(before, after))
 
 
 def extract_runtime_archive(archive_path: Path, destination: Path) -> Path:
@@ -283,6 +281,37 @@ def _create_boundary_fixture(boundary: Path) -> None:
         path = boundary.joinpath(*PurePosixPath(relative).parts)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+
+
+def _boundary_change_message(
+    before: Mapping[str, str], after: Mapping[str, str]
+) -> str:
+    before_paths = set(before)
+    after_paths = set(after)
+    added = sorted(after_paths - before_paths)
+    removed = sorted(before_paths - after_paths)
+    changed = sorted(
+        path for path in before_paths & after_paths if before[path] != after[path]
+    )
+    details: list[str] = []
+    for label, paths in (("added", added), ("removed", removed), ("changed", changed)):
+        if paths:
+            rendered = ",".join(paths[:12])
+            if len(paths) > 12:
+                rendered += f",...(+{len(paths) - 12})"
+            details.append(f"{label}={rendered}")
+    return (
+        "Runtime smoke test changed the synthetic HERMES_HOME boundary: "
+        + "; ".join(details)
+    )
+
+
+def _boundary_data_snapshot(boundary: Path) -> dict[str, str]:
+    return {
+        path: digest
+        for path, digest in snapshot_tree(boundary).items()
+        if path != ".update_check" and path != "logs" and not path.startswith("logs/")
+    }
 
 
 def _smoke_environment(
