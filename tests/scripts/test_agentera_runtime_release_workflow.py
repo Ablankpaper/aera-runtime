@@ -124,6 +124,10 @@ def test_release_graph_uses_native_targets_and_exact_toolchains():
         assert "3.11.15" in text
         assert '"node-version": "22"' in text
         assert "build_agentera_runtime_seed.py" in text
+        setup_node = next(
+            step for step in native_job["steps"] if step.get("name") == "Install Node.js 22"
+        )
+        assert setup_node["with"]["cache-dependency-path"] == "package-lock.json"
 
 
 def test_signing_secret_is_confined_and_all_external_actions_are_sha_pinned():

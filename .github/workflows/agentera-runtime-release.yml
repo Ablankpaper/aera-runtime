@@ -157,9 +157,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            ui-tui/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install exact Python and locked build dependencies
         run: |
@@ -214,9 +212,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            ui-tui/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install exact Python and locked build dependencies
         shell: pwsh
