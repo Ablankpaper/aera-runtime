@@ -774,9 +774,13 @@ def _run_command(
     command_env = os.environ.copy()
     if env:
         command_env.update(env)
+    command = list(args)
+    resolved_executable = shutil.which(command[0], path=command_env.get("PATH"))
+    if resolved_executable is not None:
+        command[0] = resolved_executable
     try:
         completed = subprocess.run(
-            list(args),
+            command,
             cwd=cwd,
             env=command_env,
             text=True,

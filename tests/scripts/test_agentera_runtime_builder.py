@@ -14,6 +14,7 @@ from typing import Mapping, Sequence
 
 import pytest
 
+from scripts.agentera_runtime_dist import builder as builder_module
 from scripts.agentera_runtime_dist.builder import (
     BuildConfig,
     BuildError,
@@ -24,6 +25,34 @@ from scripts.agentera_runtime_dist.builder import (
 from scripts.agentera_runtime_dist.protocol import RuntimeTarget
 
 _SOURCE_COMMIT = "a" * 40
+
+
+def test_command_runner_resolves_windows_command_shim_to_full_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    resolved_npm = r"C:\Program Files\nodejs\npm.cmd"
+    observed: dict[str, object] = {}
+
+    def fake_which(command: str, *, path: str | None = None) -> str:
+        observed["which"] = (command, path)
+        return resolved_npm
+
+    def fake_run(args: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed["args"] = list(args)
+        observed["shell"] = kwargs.get("shell", False)
+        return subprocess.CompletedProcess(args, 0, "built\n", "")
+
+    monkeypatch.setattr(builder_module.shutil, "which", fake_which)
+    monkeypatch.setattr(builder_module.subprocess, "run", fake_run)
+
+    result = builder_module._run_command(
+        ("npm", "ci"), cwd=tmp_path, env={"PATH": "windows-path"}
+    )
+
+    assert observed["which"] == ("npm", "windows-path")
+    assert observed["args"] == [resolved_npm, "ci"]
+    assert observed["shell"] is False
+    assert result == CommandResult("built\n", "")
 
 
 @pytest.fixture()
