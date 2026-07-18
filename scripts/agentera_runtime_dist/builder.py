@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import csv
 import hashlib
 import json
 import os
@@ -13,7 +15,7 @@ import tempfile
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from scripts.agentera_runtime_dist.archive import (
     write_deterministic_tar_zst,
@@ -40,6 +42,10 @@ DEFAULT_SOURCE_REPOSITORY = "bignormal/aera-runtime"
 _RUNTIME_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._-]{0,127}\Z")
 _SOURCE_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _STRIP_DIRECTORY_NAMES = frozenset({"__pycache__", ".pytest_cache", "tests", "test"})
+_POSIX_RELATIVE_PYTHON_HEADER = (
+    b"#!/bin/sh\n'''exec' \"$(dirname \"$0\")/python3\" \"$0\" \"$@\"\n' '''\n"
+)
+_NON_RUNTIME_INSTALL_METADATA = frozenset({"direct_url.json", "uv_cache.json"})
 
 
 class BuildError(RuntimeError):
@@ -126,6 +132,7 @@ def assemble_runtime_seed(
         _write_launchers(seed_root)
         _collect_licenses(repo_root, probe.prefix, seed_root)
         _strip_build_only_content(seed_root)
+        normalize_installed_runtime(seed_root / "python")
         entrypoints = _entrypoints(config.target)
         _write_seed_info(config, seed_root, entrypoints)
         try:
@@ -463,6 +470,92 @@ def _site_packages(python_root: Path) -> Path:
         if candidates
         else python_root / "lib" / "python3.11" / "site-packages"
     )
+
+
+def normalize_installed_runtime(python_root: Path) -> None:
+    """Remove install-host state and make generated POSIX scripts relocatable."""
+
+    python_root = Path(python_root).resolve(strict=True)
+    _normalize_posix_python_scripts(python_root / "bin")
+    site_packages = _site_packages(python_root)
+    for dist_info in sorted(site_packages.glob("*.dist-info")):
+        for name in _NON_RUNTIME_INSTALL_METADATA:
+            metadata = dist_info / name
+            if metadata.is_file() or metadata.is_symlink():
+                metadata.unlink()
+        record = dist_info / "RECORD"
+        if record.is_file():
+            _regenerate_record(record, site_packages, python_root)
+
+
+def _normalize_posix_python_scripts(scripts_dir: Path) -> None:
+    if not scripts_dir.is_dir():
+        return
+    for script in sorted(scripts_dir.iterdir()):
+        if script.is_symlink() or not script.is_file():
+            continue
+        try:
+            contents = script.read_bytes()
+        except OSError as exc:
+            raise BuildError(f"cannot inspect installed script: {script.name}") from exc
+        first_line, separator, body = contents.partition(b"\n")
+        if (
+            separator
+            and first_line.startswith(b"#!")
+            and b"python" in first_line.lower()
+        ):
+            try:
+                script.write_bytes(_POSIX_RELATIVE_PYTHON_HEADER + body)
+            except OSError as exc:
+                raise BuildError(
+                    f"cannot normalize installed script: {script.name}"
+                ) from exc
+
+
+def _regenerate_record(record: Path, site_packages: Path, python_root: Path) -> None:
+    try:
+        with record.open(encoding="utf-8", newline="") as handle:
+            original_rows = list(csv.reader(handle))
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise BuildError(f"cannot read installed RECORD: {record.parent.name}") from exc
+
+    record_resolved = record.resolve(strict=True)
+    rows_by_path: dict[str, list[str]] = {}
+    for row in original_rows:
+        if len(row) != 3 or not row[0]:
+            raise BuildError(f"invalid installed RECORD: {record.parent.name}")
+        relative = PurePosixPath(row[0])
+        if relative.is_absolute():
+            raise BuildError(f"installed RECORD path is absolute: {row[0]}")
+        target = site_packages.joinpath(*relative.parts).resolve(strict=False)
+        try:
+            target.relative_to(python_root)
+        except ValueError as exc:
+            raise BuildError(f"installed RECORD escapes Python root: {row[0]}") from exc
+        if target == record_resolved or not target.is_file():
+            continue
+        try:
+            contents = target.read_bytes()
+        except OSError as exc:
+            raise BuildError(f"cannot hash installed RECORD path: {row[0]}") from exc
+        digest = base64.urlsafe_b64encode(hashlib.sha256(contents).digest())
+        encoded = digest.decode("ascii").rstrip("=")
+        rows_by_path[row[0]] = [
+            row[0],
+            f"sha256={encoded}",
+            str(len(contents)),
+        ]
+
+    record_relative = record.relative_to(site_packages).as_posix()
+    rows_by_path[record_relative] = [record_relative, "", ""]
+    try:
+        with record.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle, lineterminator="\n")
+            writer.writerows(rows_by_path[path] for path in sorted(rows_by_path))
+    except OSError as exc:
+        raise BuildError(
+            f"cannot write installed RECORD: {record.parent.name}"
+        ) from exc
 
 
 def _strip_build_only_content(seed_root: Path) -> None:

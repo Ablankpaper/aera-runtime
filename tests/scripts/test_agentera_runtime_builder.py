@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import csv
+import hashlib
 import json
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -14,6 +19,7 @@ from scripts.agentera_runtime_dist.builder import (
     BuildError,
     CommandResult,
     assemble_runtime_seed,
+    normalize_installed_runtime,
 )
 from scripts.agentera_runtime_dist.protocol import RuntimeTarget
 
@@ -259,3 +265,93 @@ def test_builder_rejects_prohibited_content_copied_from_python(
             runner=runner,
             smoke_runner=lambda _path: None,
         )
+
+
+def _write_nondeterministic_install_metadata(
+    python_root: Path, *, temporary_prefix: Path, installed_at: str
+) -> tuple[Path, Path]:
+    scripts = python_root / "bin"
+    scripts.mkdir(parents=True)
+    (scripts / "python3").symlink_to(sys.executable)
+    hermes = scripts / "hermes"
+    hermes.write_text(
+        f"#!{temporary_prefix}/python/bin/python3\n"
+        "import sys\n"
+        "print(f'normalized:{sys.argv[1]}')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    hermes.chmod(0o755)
+
+    site_packages = python_root / "lib" / "python3.11" / "site-packages"
+    dist_info = site_packages / "hermes_agent-0.18.2.dist-info"
+    dist_info.mkdir(parents=True)
+    (dist_info / "direct_url.json").write_text(
+        json.dumps({"url": temporary_prefix.as_uri()}), encoding="utf-8"
+    )
+    (dist_info / "uv_cache.json").write_text(
+        json.dumps({"timestamp": installed_at}), encoding="utf-8"
+    )
+    record = dist_info / "RECORD"
+    record.write_text(
+        "../../../bin/hermes,sha256=stale,1\n"
+        "hermes_agent-0.18.2.dist-info/direct_url.json,sha256=stale,1\n"
+        "hermes_agent-0.18.2.dist-info/uv_cache.json,sha256=stale,1\n"
+        "hermes_agent-0.18.2.dist-info/RECORD,,\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return hermes, record
+
+
+def test_installed_runtime_normalization_is_relocatable_and_deterministic(
+    tmp_path: Path,
+):
+    first_root = tmp_path / "first" / "python"
+    second_root = tmp_path / "second" / "python"
+    first_script, first_record = _write_nondeterministic_install_metadata(
+        first_root,
+        temporary_prefix=tmp_path / "random-build-a",
+        installed_at="2026-07-18T01:02:03Z",
+    )
+    second_script, second_record = _write_nondeterministic_install_metadata(
+        second_root,
+        temporary_prefix=tmp_path / "random-build-b",
+        installed_at="2027-08-19T04:05:06Z",
+    )
+
+    normalize_installed_runtime(first_root)
+    normalize_installed_runtime(second_root)
+
+    assert first_script.read_bytes() == second_script.read_bytes()
+    assert first_record.read_bytes() == second_record.read_bytes()
+    assert str(tmp_path).encode() not in first_script.read_bytes()
+    assert not (first_record.parent / "direct_url.json").exists()
+    assert not (first_record.parent / "uv_cache.json").exists()
+
+    completed = subprocess.run(
+        [str(first_script), "ok"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout == "normalized:ok\n"
+
+    with first_record.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert [row[0] for row in rows] == [
+        "../../../bin/hermes",
+        "hermes_agent-0.18.2.dist-info/RECORD",
+    ]
+    expected_hash = (
+        base64
+        .urlsafe_b64encode(hashlib.sha256(first_script.read_bytes()).digest())
+        .decode("ascii")
+        .rstrip("=")
+    )
+    assert rows[0] == [
+        "../../../bin/hermes",
+        f"sha256={expected_hash}",
+        str(first_script.stat().st_size),
+    ]
+    assert rows[1] == ["hermes_agent-0.18.2.dist-info/RECORD", "", ""]
