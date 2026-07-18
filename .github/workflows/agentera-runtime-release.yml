@@ -1,6 +1,8 @@
 name: AgentEra Runtime Release
 
 on:
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       agentera_revision:
@@ -31,12 +33,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: agentera-runtime-${{ inputs.channel }}
+  group: agentera-runtime-${{ github.event_name == 'pull_request' && 'candidate' || inputs.channel }}
   cancel-in-progress: false
 
 jobs:
   compatibility:
     name: Version and Hermes compatibility gate
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'pull_request' &&
+          github.event.label.name == 'runtime-dry-run' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        )
+      }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     outputs:
@@ -44,11 +55,13 @@ jobs:
       release_tag: ${{ steps.metadata.outputs.release_tag }}
       release_name: ${{ steps.metadata.outputs.release_name }}
       source_commit: ${{ steps.metadata.outputs.source_commit }}
+      channel: ${{ steps.metadata.outputs.channel }}
     steps:
       - name: Checkout reviewed source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
@@ -66,10 +79,10 @@ jobs:
       - name: Compute release identity from reviewed source
         id: metadata
         env:
-          AGENTERA_REVISION: ${{ inputs.agentera_revision }}
-          CANDIDATE_NUMBER: ${{ inputs.candidate_number }}
-          CHANNEL: ${{ inputs.channel }}
-          SOURCE_COMMIT: ${{ github.sha }}
+          AGENTERA_REVISION: ${{ github.event_name == 'pull_request' && 1 || inputs.agentera_revision }}
+          CANDIDATE_NUMBER: ${{ github.event_name == 'pull_request' && 1 || inputs.candidate_number }}
+          CHANNEL: ${{ github.event_name == 'pull_request' && 'candidate' || inputs.channel }}
+          SOURCE_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           uv run --no-sync python - <<'PY'
           import os
@@ -108,6 +121,7 @@ jobs:
               output.write(f"release_tag={release_tag}\n")
               output.write(f"release_name={release_name}\n")
               output.write(f"source_commit={source_commit}\n")
+              output.write(f"channel={channel}\n")
           PY
 
       - name: Run Hermes self-evolution compatibility gate
@@ -274,7 +288,7 @@ jobs:
 
       - name: Reconstruct, sign, and independently verify bundle
         env:
-          CHANNEL: ${{ inputs.channel }}
+          CHANNEL: ${{ needs.compatibility.outputs.channel }}
           RELEASE_TAG: ${{ needs.compatibility.outputs.release_tag }}
           RUNTIME_VERSION: ${{ needs.compatibility.outputs.runtime_version }}
           SOURCE_COMMIT: ${{ needs.compatibility.outputs.source_commit }}
@@ -532,7 +546,7 @@ jobs:
 
       - name: Recheck checksums and release asset contract
         env:
-          CHANNEL: ${{ inputs.channel }}
+          CHANNEL: ${{ needs.compatibility.outputs.channel }}
           RUNTIME_VERSION: ${{ needs.compatibility.outputs.runtime_version }}
         run: |
           set -euo pipefail
@@ -565,7 +579,7 @@ jobs:
           PY
 
       - name: Create immutable GitHub Release
-        if: ${{ inputs.publish }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ inputs.channel }}

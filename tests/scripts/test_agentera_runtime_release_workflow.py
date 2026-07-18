@@ -68,6 +68,32 @@ def test_dispatch_inputs_are_narrow_and_version_is_computed_from_source():
     assert "runtime_version" in text
 
 
+def test_same_repository_pr_label_runs_a_candidate_rehearsal_from_head_sha():
+    workflow = _workflow()
+    triggers = _triggers(workflow)
+
+    assert triggers["pull_request"]["types"] == ["labeled"]
+
+    compatibility = workflow["jobs"]["compatibility"]
+    compatibility_text = _job_text(compatibility)
+    guard = str(compatibility["if"])
+    assert "github.event.label.name == 'runtime-dry-run'" in guard
+    assert (
+        "github.event.pull_request.head.repo.full_name == github.repository" in guard
+    )
+    assert "github.event.pull_request.head.sha" in compatibility_text
+    assert "github.event_name == 'pull_request'" in compatibility_text
+    assert "'candidate'" in compatibility_text
+
+    publish_text = _job_text(workflow["jobs"]["publish"])
+    assert "github.event_name == 'workflow_dispatch'" in publish_text
+    assert "inputs.publish" in publish_text
+
+    runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+    assert "runtime-dry-run" in runbook
+    assert "same-repository" in runbook
+
+
 def test_release_graph_uses_native_targets_and_exact_toolchains():
     jobs = _workflow()["jobs"]
     macos = jobs["build_macos_arm64"]

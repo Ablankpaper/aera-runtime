@@ -16,8 +16,17 @@ The workflow accepts only four manual inputs:
   GitHub Release.
 
 The Hermes version is read from `pyproject.toml`. The Runtime version is
-`<hermes-version>-agentera.<revision>`, and the source commit is always the
-workflow's reviewed `github.sha`; callers cannot supply either value.
+`<hermes-version>-agentera.<revision>`. A manual run uses its reviewed
+`github.sha`; the guarded pull-request rehearsal uses that pull request's exact
+head SHA. Callers cannot supply either source value.
+
+Before this workflow exists on the default branch, a reviewer may apply the
+`runtime-dry-run` label to a same-repository pull request to run one candidate
+rehearsal. That path fixes the revision and candidate number to `1`, fixes the
+channel to `candidate`, checks out the pull request's exact head SHA, and can
+never execute the Release creation step. Fork pull requests are rejected by
+the job guard. Remove the label after the rehearsal so later commits do not
+inherit an operator approval signal.
 
 Candidate tags use
 `runtime-v<version>-rc.<candidate-number>`. Stable tags use
