@@ -183,6 +183,7 @@ def test_public_certificate_pem_is_allowed(seed_root: Path):
         "python/lib/site-packages/googleapiclient/discovery_cache/__init__.py",
         "python/lib/site-packages/provider/models/schema.py",
         "python/lib/site-packages/pip/_vendor/cachecontrol/caches/file_cache.py",
+        "python/lib/python3.11/venv/__init__.py",
     ],
 )
 def test_runtime_code_directories_that_resemble_artifact_names_are_allowed(

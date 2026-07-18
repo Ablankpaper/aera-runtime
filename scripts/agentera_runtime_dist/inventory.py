@@ -27,7 +27,6 @@ _PROHIBITED_SEGMENTS = frozenset({
     ".hg",
     ".svn",
     ".venv",
-    "venv",
     "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
