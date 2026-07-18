@@ -1,0 +1,596 @@
+name: AgentEra Runtime Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      agentera_revision:
+        description: AgentEra packaging revision appended to the Hermes version
+        required: true
+        type: number
+        default: 1
+      channel:
+        description: Release channel
+        required: true
+        type: choice
+        options:
+          - candidate
+          - stable
+        default: candidate
+      candidate_number:
+        description: Candidate sequence number; ignored for stable releases
+        required: true
+        type: number
+        default: 1
+      publish:
+        description: Create the Git tag and GitHub Release after verification
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agentera-runtime-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  compatibility:
+    name: Version and Hermes compatibility gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    outputs:
+      runtime_version: ${{ steps.metadata.outputs.runtime_version }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      release_name: ${{ steps.metadata.outputs.release_name }}
+      source_commit: ${{ steps.metadata.outputs.source_commit }}
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install exact Python and locked test dependencies
+        run: |
+          uv python install 3.11.15
+          uv sync --locked --python 3.11.15 --extra all --extra dev
+
+      - name: Compute release identity from reviewed source
+        id: metadata
+        env:
+          AGENTERA_REVISION: ${{ inputs.agentera_revision }}
+          CANDIDATE_NUMBER: ${{ inputs.candidate_number }}
+          CHANNEL: ${{ inputs.channel }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          uv run --no-sync python - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          integer = re.compile(r"[1-9][0-9]*\Z")
+          revision = os.environ["AGENTERA_REVISION"]
+          candidate = os.environ["CANDIDATE_NUMBER"]
+          channel = os.environ["CHANNEL"]
+          source_commit = os.environ["SOURCE_COMMIT"]
+          if not integer.fullmatch(revision):
+              raise SystemExit("agentera_revision must be a positive integer")
+          if not integer.fullmatch(candidate):
+              raise SystemExit("candidate_number must be a positive integer")
+          if channel not in {"candidate", "stable"}:
+              raise SystemExit("channel must be candidate or stable")
+          if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+              raise SystemExit("workflow source commit must be a full Git SHA")
+
+          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          base_version = project["project"]["version"]
+          if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", base_version):
+              raise SystemExit("pyproject project.version is not numeric")
+          runtime_version = f"{base_version}-agentera.{revision}"
+          if channel == "candidate":
+              release_tag = f"runtime-v{runtime_version}-rc.{candidate}"
+              release_name = f"AgentEra Runtime {runtime_version} candidate {candidate}"
+          else:
+              release_tag = f"runtime-v{runtime_version}"
+              release_name = f"AgentEra Runtime {runtime_version}"
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"runtime_version={runtime_version}\n")
+              output.write(f"release_tag={release_tag}\n")
+              output.write(f"release_name={release_name}\n")
+              output.write(f"source_commit={source_commit}\n")
+          PY
+
+      - name: Run Hermes self-evolution compatibility gate
+        env:
+          AGENTERA_RUNTIME_RELEASE_BUILD: "1"
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+        run: scripts/run_agentera_compatibility.sh -j 4 -q
+
+  build_macos_arm64:
+    name: Build and smoke macOS ARM64 Seed
+    needs: compatibility
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.compatibility.outputs.source_commit }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            ui-tui/package-lock.json
+
+      - name: Install exact Python and locked build dependencies
+        run: |
+          test "$(uname -m)" = "arm64"
+          uv python install 3.11.15
+          uv sync --locked --python 3.11.15 --extra all --extra dev
+
+      - name: Build, extract, and smoke unsigned macOS Seed
+        env:
+          RUNTIME_VERSION: ${{ needs.compatibility.outputs.runtime_version }}
+          SOURCE_COMMIT: ${{ needs.compatibility.outputs.source_commit }}
+        run: |
+          MANAGED_PYTHON="$(uv python find 3.11.15)"
+          uv run --no-sync python scripts/build_agentera_runtime_seed.py \
+            --runtime-version "$RUNTIME_VERSION" \
+            --source-commit "$SOURCE_COMMIT" \
+            --python "$MANAGED_PYTHON" \
+            --output-dir dist/agentera-runtime \
+            --platform darwin \
+            --arch arm64
+
+      - name: Upload unsigned macOS Seed
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-unsigned-darwin-arm64
+          path: dist/agentera-runtime/*
+          if-no-files-found: error
+          retention-days: 7
+
+  build_windows_x64:
+    name: Build and smoke Windows x64 Seed
+    needs: compatibility
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.compatibility.outputs.source_commit }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            ui-tui/package-lock.json
+
+      - name: Install exact Python and locked build dependencies
+        shell: pwsh
+        run: |
+          python -c "import platform; assert platform.machine().upper() in {'AMD64', 'X86_64'}"
+          uv python install 3.11.15
+          uv sync --locked --python 3.11.15 --extra all --extra dev
+
+      - name: Build, extract, and smoke unsigned Windows Seed
+        shell: pwsh
+        env:
+          RUNTIME_VERSION: ${{ needs.compatibility.outputs.runtime_version }}
+          SOURCE_COMMIT: ${{ needs.compatibility.outputs.source_commit }}
+        run: |
+          $managedPython = (uv python find 3.11.15).Trim()
+          uv run --no-sync python scripts/build_agentera_runtime_seed.py --runtime-version "$env:RUNTIME_VERSION" --source-commit "$env:SOURCE_COMMIT" --python "$managedPython" --output-dir dist/agentera-runtime --platform windows --arch x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload unsigned Windows Seed
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-unsigned-windows-x64
+          path: dist/agentera-runtime/*
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: Sign and independently verify release bundle
+    needs:
+      - compatibility
+      - build_macos_arm64
+      - build_windows_x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: runtime-production
+    steps:
+      - name: Checkout exact verifier source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.compatibility.outputs.source_commit }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+
+      - name: Install exact verification environment
+        run: |
+          uv python install 3.11.15
+          uv sync --locked --python 3.11.15 --extra dev
+
+      - name: Download both unsigned native artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: runtime-unsigned-*
+          path: dist/unsigned
+          merge-multiple: true
+
+      - name: Materialize protected Ed25519 key
+        env:
+          SIGNING_KEY_PEM_B64: ${{ secrets.AGENTERA_RUNTIME_SIGNING_KEY_PEM_B64 }}
+          SIGNING_KEY_ID: ${{ vars.AGENTERA_RUNTIME_SIGNING_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_KEY_PEM_B64"
+          test -n "$SIGNING_KEY_ID"
+          umask 077
+          printf '%s' "$SIGNING_KEY_PEM_B64" | base64 --decode \
+            > "$RUNNER_TEMP/agentera-runtime-signing.pem"
+
+      - name: Reconstruct, sign, and independently verify bundle
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          RELEASE_TAG: ${{ needs.compatibility.outputs.release_tag }}
+          RUNTIME_VERSION: ${{ needs.compatibility.outputs.runtime_version }}
+          SOURCE_COMMIT: ${{ needs.compatibility.outputs.source_commit }}
+          SIGNING_KEY_ID: ${{ vars.AGENTERA_RUNTIME_SIGNING_KEY_ID }}
+          PRIVATE_KEY_PATH: ${{ runner.temp }}/agentera-runtime-signing.pem
+        run: |
+          uv run --no-sync python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import shutil
+          import stat
+          import tempfile
+          import zipfile
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+          from scripts.agentera_runtime_dist.protocol import (
+              ManifestValidationContext,
+              RuntimeTarget,
+              canonical_json_bytes,
+              create_signature_envelope,
+              parse_signature_envelope,
+              sign_bytes,
+              validate_key_id,
+              verify_bytes,
+          )
+          from scripts.agentera_runtime_dist.smoke import verify_signed_runtime_seed
+
+          unsigned_dir = Path("dist/unsigned")
+          output_dir = Path("dist/signed")
+          output_dir.mkdir(parents=True, exist_ok=False)
+          runtime_version = os.environ["RUNTIME_VERSION"]
+          source_commit = os.environ["SOURCE_COMMIT"]
+          channel = os.environ["CHANNEL"]
+          release_tag = os.environ["RELEASE_TAG"]
+          key_id = os.environ["SIGNING_KEY_ID"]
+          validate_key_id(key_id)
+          created_at = (
+              datetime.now(timezone.utc)
+              .replace(microsecond=0)
+              .isoformat()
+              .replace("+00:00", "Z")
+          )
+
+          private_pem = Path(os.environ["PRIVATE_KEY_PATH"]).read_bytes()
+          private_key = serialization.load_pem_private_key(private_pem, password=None)
+          if not isinstance(private_key, Ed25519PrivateKey):
+              raise SystemExit("protected Runtime signing key is not Ed25519")
+          public_pem = private_key.public_key().public_bytes(
+              encoding=serialization.Encoding.PEM,
+              format=serialization.PublicFormat.SubjectPublicKeyInfo,
+          )
+
+          metadata_paths = sorted(unsigned_dir.glob("*.build.json"))
+          if len(metadata_paths) != 2:
+              raise SystemExit("exactly two unsigned Runtime metadata files are required")
+          expected_targets = {("darwin", "arm64"), ("windows", "x64")}
+          actual_targets = set()
+          index_targets = []
+          signed = []
+
+          for metadata_path in metadata_paths:
+              raw_metadata = metadata_path.read_bytes()
+              metadata = json.loads(raw_metadata)
+              if canonical_json_bytes(metadata) != raw_metadata:
+                  raise SystemExit(f"non-canonical build metadata: {metadata_path.name}")
+              target = (metadata["platform"], metadata["arch"])
+              actual_targets.add(target)
+              if metadata["runtime_version"] != runtime_version:
+                  raise SystemExit("native artifacts disagree on Runtime version")
+              if metadata["source_commit"] != source_commit:
+                  raise SystemExit("native artifacts disagree on source commit")
+              if metadata["source_repository"] != "bignormal/aera-runtime":
+                  raise SystemExit("native artifact repository is not approved")
+
+              archive_name = metadata["archive_name"]
+              archive = unsigned_dir / archive_name
+              if not archive.is_file():
+                  raise SystemExit(f"missing native archive: {archive_name}")
+              if archive.stat().st_size != metadata["archive_size"]:
+                  raise SystemExit(f"native archive size mismatch: {archive_name}")
+              digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+              if digest != metadata["archive_sha256"]:
+                  raise SystemExit(f"native archive hash mismatch: {archive_name}")
+
+              manifest = dict(metadata)
+              manifest.update(key_id=key_id, channel=channel, created_at=created_at)
+              manifest_raw = canonical_json_bytes(manifest)
+              if archive_name.endswith(".tar.zst"):
+                  artifact_stem = archive_name.removesuffix(".tar.zst")
+              elif archive_name.endswith(".zip"):
+                  artifact_stem = archive_name.removesuffix(".zip")
+              else:
+                  raise SystemExit(f"unsupported Runtime archive: {archive_name}")
+              manifest_name = f"{artifact_stem}.manifest.json"
+              signature_name = f"{artifact_stem}.manifest.sig"
+              manifest_path = output_dir / manifest_name
+              signature_path = output_dir / signature_name
+              manifest_path.write_bytes(manifest_raw)
+              signature_path.write_bytes(
+                  create_signature_envelope(
+                      key_id,
+                      sign_bytes(manifest_raw, private_pem),
+                  )
+              )
+              shutil.copy2(archive, output_dir / archive_name)
+              signed.append((archive_name, manifest_path, signature_path, target))
+              index_targets.append(
+                  {
+                      "platform": target[0],
+                      "arch": target[1],
+                      "archive_name": archive_name,
+                      "manifest_name": manifest_name,
+                      "signature_name": signature_name,
+                      "archive_sha256": metadata["archive_sha256"],
+                  }
+              )
+
+          if actual_targets != expected_targets:
+              raise SystemExit(f"native target set is incomplete: {actual_targets}")
+
+          index_targets.sort(key=lambda item: (item["platform"], item["arch"]))
+          channel_index = {
+              "schema_version": 1,
+              "key_id": key_id,
+              "channel": channel,
+              "runtime_version": runtime_version,
+              "source_repository": "bignormal/aera-runtime",
+              "source_commit": source_commit,
+              "release_tag": release_tag,
+              "created_at": created_at,
+              "targets": index_targets,
+          }
+          index_raw = canonical_json_bytes(channel_index)
+          index_path = output_dir / f"agentera-runtime-{channel}.index.json"
+          index_signature_path = output_dir / f"agentera-runtime-{channel}.index.sig"
+          index_path.write_bytes(index_raw)
+          index_signature_raw = create_signature_envelope(
+              key_id,
+              sign_bytes(index_raw, private_pem),
+          )
+          index_signature_path.write_bytes(index_signature_raw)
+          envelope = parse_signature_envelope(index_signature_raw)
+          if envelope["key_id"] != key_id:
+              raise SystemExit("channel index signature key binding failed")
+          verify_bytes(
+              index_raw,
+              base64.b64decode(envelope["signature_base64"], validate=True),
+              public_pem,
+          )
+
+          license_root = Path(tempfile.mkdtemp(prefix="agentera-runtime-licenses-"))
+          try:
+              with tempfile.TemporaryDirectory(
+                  prefix="agentera-runtime-signed-verify-"
+              ) as temporary:
+                  verification_root = Path(temporary)
+                  for archive_name, manifest_path, signature_path, target in signed:
+                      extracted = verify_signed_runtime_seed(
+                          archive_path=output_dir / archive_name,
+                          manifest_path=manifest_path,
+                          signature_path=signature_path,
+                          trusted_public_keys={key_id: public_pem},
+                          context=ManifestValidationContext(
+                              repository="bignormal/aera-runtime",
+                              target=RuntimeTarget(target[0], target[1]),
+                              desktop_version="9999.0.0",
+                              allowed_channels=frozenset({channel}),
+                          ),
+                          extraction_dir=verification_root
+                          / f"{target[0]}-{target[1]}",
+                          smoke_runner=lambda _seed: None,
+                      )
+                      shutil.copytree(
+                          extracted / "THIRD_PARTY_LICENSES",
+                          license_root / f"{target[0]}-{target[1]}",
+                      )
+
+              license_bundle = (
+                  output_dir / f"agentera-runtime-{runtime_version}-licenses.zip"
+              )
+              with zipfile.ZipFile(
+                  license_bundle,
+                  mode="w",
+                  compression=zipfile.ZIP_DEFLATED,
+                  compresslevel=9,
+              ) as archive:
+                  for source in sorted(
+                      path for path in license_root.rglob("*") if path.is_file()
+                  ):
+                      relative = source.relative_to(license_root).as_posix()
+                      info = zipfile.ZipInfo(
+                          f"agentera-runtime-licenses/{relative}",
+                          date_time=(1980, 1, 1, 0, 0, 0),
+                      )
+                      info.compress_type = zipfile.ZIP_DEFLATED
+                      info.external_attr = (stat.S_IFREG | 0o644) << 16
+                      archive.writestr(info, source.read_bytes())
+          finally:
+              shutil.rmtree(license_root, ignore_errors=True)
+
+          checksum_path = output_dir / "SHA256SUMS"
+          checksum_lines = []
+          for artifact in sorted(output_dir.iterdir(), key=lambda path: path.name):
+              if artifact == checksum_path or not artifact.is_file():
+                  continue
+              checksum_lines.append(
+                  f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}"
+              )
+          checksum_path.write_text(
+              "\n".join(checksum_lines) + "\n",
+              encoding="ascii",
+              newline="\n",
+          )
+          fingerprint = hashlib.sha256(public_pem).hexdigest()
+          print(f"signed_targets={len(signed)}")
+          print(f"signing_key_id={key_id}")
+          print(f"public_key_pem_sha256={fingerprint}")
+          PY
+
+      - name: Remove ephemeral private key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/agentera-runtime-signing.pem"
+
+      - name: Upload verified signed bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agentera-runtime-signed-${{ needs.compatibility.outputs.release_tag }}
+          path: dist/signed/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Validate bundle and optionally publish GitHub Release
+    needs:
+      - compatibility
+      - build_macos_arm64
+      - build_windows_x64
+      - sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified signed bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: agentera-runtime-signed-${{ needs.compatibility.outputs.release_tag }}
+          path: dist/signed
+
+      - name: Recheck checksums and release asset contract
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          RUNTIME_VERSION: ${{ needs.compatibility.outputs.runtime_version }}
+        run: |
+          set -euo pipefail
+          cd dist/signed
+          sha256sum --check SHA256SUMS
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          channel = os.environ["CHANNEL"]
+          version = os.environ["RUNTIME_VERSION"]
+          expected = {
+              f"agentera-runtime-{version}-darwin-arm64.tar.zst",
+              f"agentera-runtime-{version}-darwin-arm64.manifest.json",
+              f"agentera-runtime-{version}-darwin-arm64.manifest.sig",
+              f"agentera-runtime-{version}-windows-x64.zip",
+              f"agentera-runtime-{version}-windows-x64.manifest.json",
+              f"agentera-runtime-{version}-windows-x64.manifest.sig",
+              f"agentera-runtime-{channel}.index.json",
+              f"agentera-runtime-{channel}.index.sig",
+              f"agentera-runtime-{version}-licenses.zip",
+              "SHA256SUMS",
+          }
+          actual = {path.name for path in Path(".").iterdir() if path.is_file()}
+          if actual != expected:
+              raise SystemExit(
+                  f"signed release asset set differs: missing={expected - actual}, "
+                  f"unexpected={actual - expected}"
+              )
+          PY
+
+      - name: Create immutable GitHub Release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+          RELEASE_NAME: ${{ needs.compatibility.outputs.release_name }}
+          RELEASE_TAG: ${{ needs.compatibility.outputs.release_tag }}
+          SOURCE_COMMIT: ${{ needs.compatibility.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+            >/dev/null 2>&1; then
+            echo "::error::Refusing to replace existing tag $RELEASE_TAG"
+            exit 1
+          fi
+          if [[ "$CHANNEL" == "candidate" ]]; then
+            gh release create "$RELEASE_TAG" dist/signed/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$SOURCE_COMMIT" \
+              --title "$RELEASE_NAME" \
+              --notes "Signed AgentEra Runtime $CHANNEL release from $SOURCE_COMMIT." \
+              --prerelease
+          else
+            gh release create "$RELEASE_TAG" dist/signed/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$SOURCE_COMMIT" \
+              --title "$RELEASE_NAME" \
+              --notes "Signed AgentEra Runtime $CHANNEL release from $SOURCE_COMMIT." \
+              --latest
+          fi
