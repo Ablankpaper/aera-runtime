@@ -77,7 +77,7 @@ def write_deterministic_zip(root: Path, destination: Path) -> None:
         ) as archive:
             archive.comment = b""
             archive.writestr(_zip_info(f"{ARCHIVE_ROOT}/", "directory", 0o755), b"")
-            for entry in entries:
+            for entry in sorted(entries, key=_zip_archive_name):
                 _write_zip_entry(archive, root, entry)
         with temporary.open("r+b") as handle:
             os.fsync(handle.fileno())
@@ -218,9 +218,9 @@ def _zip_info(name: str, kind: str, mode: int) -> zipfile.ZipInfo:
 def _write_zip_entry(
     archive: zipfile.ZipFile, root: Path, entry: InventoryEntry
 ) -> None:
-    archive_name = f"{ARCHIVE_ROOT}/{entry.path}"
+    archive_name = _zip_archive_name(entry)
     if entry.kind == "directory":
-        archive.writestr(_zip_info(f"{archive_name}/", entry.kind, entry.mode), b"")
+        archive.writestr(_zip_info(archive_name, entry.kind, entry.mode), b"")
     elif entry.kind == "symlink":
         archive.writestr(
             _zip_info(archive_name, entry.kind, entry.mode),
@@ -232,6 +232,11 @@ def _write_zip_entry(
             with (root / entry.path).open("rb") as source:
                 while chunk := source.read(1024 * 1024):
                     target.write(chunk)
+
+
+def _zip_archive_name(entry: InventoryEntry) -> str:
+    archive_name = f"{ARCHIVE_ROOT}/{entry.path}"
+    return f"{archive_name}/" if entry.kind == "directory" else archive_name
 
 
 def _inspect_tar_zst(destination: Path) -> list[InventoryEntry]:
@@ -356,6 +361,7 @@ def _inspect_zip(destination: Path) -> list[InventoryEntry]:
     _assert_archive_order_and_root(names, root_seen)
     _assert_unique_inventory(entries)
     _assert_symlink_targets_exist(entries)
+    entries.sort(key=lambda entry: entry.path)
     return entries
 
 

@@ -127,6 +127,23 @@ def test_zip_repeated_builds_are_byte_identical_and_use_posix_names(
     assert stat.S_IMODE(hermes.external_attr >> 16) == 0o755
 
 
+def test_zip_sorts_directory_names_as_they_are_stored(
+    seed_root: Path, tmp_path: Path
+):
+    (seed_root / "python" / "package").mkdir()
+    (seed_root / "python" / "package.dist-info").write_text(
+        "metadata\n", encoding="utf-8"
+    )
+    destination = tmp_path / "runtime.zip"
+
+    write_deterministic_zip(seed_root, destination)
+
+    with zipfile.ZipFile(destination) as archive:
+        names = [info.filename for info in archive.infolist()]
+    assert names == sorted(names)
+    assert inspect_archive(destination) == build_inventory(seed_root)
+
+
 def test_relative_symlink_metadata_survives_both_archive_formats(
     seed_root: Path, tmp_path: Path
 ):
