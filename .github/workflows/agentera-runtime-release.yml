@@ -170,7 +170,7 @@ jobs:
           RUNTIME_VERSION: ${{ needs.compatibility.outputs.runtime_version }}
           SOURCE_COMMIT: ${{ needs.compatibility.outputs.source_commit }}
         run: |
-          MANAGED_PYTHON="$(uv python find --no-project --managed-python --resolve-links 3.11.15)"
+          MANAGED_PYTHON="$(uv python find --system --managed-python --resolve-links 3.11.15)"
           uv run --no-sync python scripts/build_agentera_runtime_seed.py \
             --runtime-version "$RUNTIME_VERSION" \
             --source-commit "$SOURCE_COMMIT" \
@@ -227,7 +227,7 @@ jobs:
           RUNTIME_VERSION: ${{ needs.compatibility.outputs.runtime_version }}
           SOURCE_COMMIT: ${{ needs.compatibility.outputs.source_commit }}
         run: |
-          $managedPython = (uv python find --no-project --managed-python --resolve-links 3.11.15).Trim()
+          $managedPython = (uv python find --system --managed-python --resolve-links 3.11.15).Trim()
           uv run --no-sync python scripts/build_agentera_runtime_seed.py --runtime-version "$env:RUNTIME_VERSION" --source-commit "$env:SOURCE_COMMIT" --python "$managedPython" --output-dir dist/agentera-runtime --platform windows --arch x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

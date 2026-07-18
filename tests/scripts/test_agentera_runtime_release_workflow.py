@@ -125,7 +125,7 @@ def test_release_graph_uses_native_targets_and_exact_toolchains():
         assert '"node-version": "22"' in text
         assert "build_agentera_runtime_seed.py" in text
         assert (
-            "uv python find --no-project --managed-python --resolve-links 3.11.15"
+            "uv python find --system --managed-python --resolve-links 3.11.15"
             in text
         )
         setup_node = next(
