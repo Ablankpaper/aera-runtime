@@ -36,13 +36,8 @@ _PROHIBITED_SEGMENTS = frozenset({
     ".nox",
     ".cache",
     ".local-browsers",
-    "cache",
-    "caches",
     "tests",
     "test",
-    "sessions",
-    "logs",
-    "log",
     "chromium",
     "chrome",
     "firefox",
@@ -50,6 +45,14 @@ _PROHIBITED_SEGMENTS = frozenset({
     "ms-playwright",
     "playwright-browsers",
     "model-weights",
+})
+_PROHIBITED_ROOT_CHILD_SEGMENTS = frozenset({
+    "cache",
+    "caches",
+    "pip-cache",
+    "sessions",
+    "logs",
+    "log",
 })
 _PROHIBITED_FILENAMES = frozenset({
     ".env",
@@ -254,7 +257,14 @@ def _assert_entry_is_allowed(
     physical_path: Path, entry: InventoryEntry, parts: tuple[str, ...]
 ) -> None:
     folded_parts = tuple(part.casefold() for part in parts)
-    if any(_is_prohibited_segment(part) for part in folded_parts):
+    root_child_is_prohibited = (
+        len(folded_parts) >= 2
+        and folded_parts[0] in {"python", "runtime"}
+        and folded_parts[1] in _PROHIBITED_ROOT_CHILD_SEGMENTS
+    )
+    if root_child_is_prohibited or any(
+        _is_prohibited_segment(part) for part in folded_parts
+    ):
         raise InventoryError(f"prohibited directory in Seed: {entry.path}")
     filename = folded_parts[-1]
     if filename in _PROHIBITED_FILENAMES or filename.startswith(".env."):
@@ -278,10 +288,8 @@ def _assert_entry_is_allowed(
 
 
 def _is_prohibited_segment(segment: str) -> bool:
-    return (
-        segment in _PROHIBITED_SEGMENTS
-        or segment.endswith(("-cache", ".cache"))
-        or segment.startswith(_BROWSER_SEGMENT_PREFIXES)
+    return segment in _PROHIBITED_SEGMENTS or segment.startswith(
+        _BROWSER_SEGMENT_PREFIXES
     )
 
 
