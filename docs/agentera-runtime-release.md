@@ -42,8 +42,8 @@ the matching non-secret identifier in the repository variable
 The private PEM must remain outside Git and the desktop repository. The
 workflow materializes it with mode `0600` only inside the isolated Ubuntu sign
 job, removes it in an `always()` cleanup step, and passes no signing secret to
-compatibility, native build, or publish jobs. Environment reviewers should be
-required before the sign job starts.
+compatibility, native build, validation, or publication jobs. Environment
+reviewers should be required before the sign job starts.
 
 Generate a key pair outside the repository with:
 
@@ -71,8 +71,9 @@ the desktop trust set.
    public key, safely extracts both archives without executing foreign
    binaries, signs the channel index, and creates checksums and a license
    bundle.
-4. The publish job always rechecks `SHA256SUMS` and the exact asset set. Only
-   `publish=true` creates the immutable Git tag and GitHub Release.
+4. The read-only validation job always rechecks `SHA256SUMS` and the exact asset
+   set. A separate job receives `contents: write` only for a manual dispatch
+   with `publish=true`, then creates the immutable Git tag and GitHub Release.
 
 `publish=false` is the mandatory first run for every new Runtime revision. It
 exercises every build, smoke, signing, verification, and bundle step without

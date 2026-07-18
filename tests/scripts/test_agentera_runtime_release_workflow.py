@@ -85,9 +85,10 @@ def test_same_repository_pr_label_runs_a_candidate_rehearsal_from_head_sha():
     assert "github.event_name == 'pull_request'" in compatibility_text
     assert "'candidate'" in compatibility_text
 
-    publish_text = _job_text(workflow["jobs"]["publish"])
-    assert "github.event_name == 'workflow_dispatch'" in publish_text
-    assert "inputs.publish" in publish_text
+    release = workflow["jobs"]["publish_release"]
+    release_guard = str(release["if"])
+    assert "github.event_name == 'workflow_dispatch'" in release_guard
+    assert "inputs.publish" in release_guard
 
     runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
     assert "runtime-dry-run" in runbook
@@ -99,7 +100,8 @@ def test_release_graph_uses_native_targets_and_exact_toolchains():
     macos = jobs["build_macos_arm64"]
     windows = jobs["build_windows_x64"]
     sign = jobs["sign"]
-    publish = jobs["publish"]
+    validate = jobs["validate_bundle"]
+    publish = jobs["publish_release"]
 
     assert _needs(macos) == {"compatibility"}
     assert _needs(windows) == {"compatibility"}
@@ -108,12 +110,13 @@ def test_release_graph_uses_native_targets_and_exact_toolchains():
         "build_macos_arm64",
         "build_windows_x64",
     }
-    assert _needs(publish) == {
+    assert _needs(validate) == {
         "compatibility",
         "build_macos_arm64",
         "build_windows_x64",
         "sign",
     }
+    assert _needs(publish) == {"compatibility", "validate_bundle"}
 
     assert macos["runs-on"] == "macos-14"
     assert "arm64" in _job_text(macos)
@@ -155,6 +158,25 @@ def test_signing_secret_is_confined_and_all_external_actions_are_sha_pinned():
     assert "verify_signed_runtime_seed" in sign_text
     assert "upload-artifact" in sign_text
     assert "inputs.publish" not in sign_text
+
+
+def test_release_write_permission_is_confined_to_the_dispatch_only_job():
+    jobs = _workflow()["jobs"]
+    validate = jobs["validate_bundle"]
+    publish = jobs["publish_release"]
+
+    assert validate.get("permissions") == {"contents": "read"}
+    assert "gh release create" not in _job_text(validate)
+
+    assert publish.get("permissions") == {"contents": "write"}
+    guard = str(publish["if"])
+    assert "github.event_name == 'workflow_dispatch'" in guard
+    assert "inputs.publish" in guard
+    assert "gh release create" in _job_text(publish)
+
+    for name, job in jobs.items():
+        if name != "publish_release":
+            assert job.get("permissions", {}).get("contents") != "write"
 
 
 def test_distribution_gate_and_runbook_preserve_the_hermes_boundary():
