@@ -191,6 +191,12 @@ _LONG_HANDLERS = frozenset(
         "complete.path",
         "complete.slash",
         "llm.oneshot",
+        # Building the picker inventory can take seconds while it checks provider
+        # credentials, pricing, and the current custom endpoint. Keep it off the
+        # WebSocket reader thread so session.create / prompt.submit are still
+        # accepted while model.options is in flight. Backported from upstream
+        # 9b8b054c2d after reviewing only this transport-scheduling hunk.
+        "model.options",
         # Pet RPCs hit the network (manifest fetch / spritesheet download) or do
         # per-frame PNG decode/encode (pet.cells): inline they serialize on the
         # reader thread, so picker previews trickle in one at a time and the

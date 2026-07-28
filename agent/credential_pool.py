@@ -43,11 +43,16 @@ logger = logging.getLogger(__name__)
 
 
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml, returning None on any error."""
-    try:
-        from hermes_cli.config import load_config
+    """Load config.yaml read-only, returning None on any error.
 
-        return load_config()
+    Every caller in this module only reads the result. Avoiding the defensive
+    deepcopy paid by ``load_config()`` matters here because model inventory
+    checks load the credential pool once per provider row.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        return load_config_readonly()
     except Exception:
         return None
 
