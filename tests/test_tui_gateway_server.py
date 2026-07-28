@@ -865,6 +865,52 @@ def test_dispatch_rejects_non_object_params():
     }
 
 
+def test_dispatch_schedules_model_options_without_blocking_reader(monkeypatch):
+    """A slow model inventory must not occupy the WebSocket reader thread."""
+    jobs = []
+    calls = []
+    writes = []
+
+    class DeferredPool:
+        def submit(self, job):
+            jobs.append(job)
+
+    class Transport:
+        def write(self, response):
+            writes.append(response)
+            return True
+
+    def model_options(rid, _params):
+        calls.append("model.options")
+        return server._ok(rid, {"providers": []})
+
+    monkeypatch.setattr(server, "_pool", DeferredPool())
+    monkeypatch.setitem(server._methods, "model.options", model_options)
+    monkeypatch.setitem(
+        server._methods,
+        "test.fast",
+        lambda rid, _params: server._ok(rid, {"ready": True}),
+    )
+
+    transport = Transport()
+    deferred = server.dispatch(
+        {"id": "models", "method": "model.options", "params": {}},
+        transport,
+    )
+
+    assert deferred is None
+    assert calls == []
+    assert len(jobs) == 1
+    assert server.dispatch(
+        {"id": "fast", "method": "test.fast", "params": {}},
+        transport,
+    ) == server._ok("fast", {"ready": True})
+
+    jobs[0]()
+    assert calls == ["model.options"]
+    assert writes == [server._ok("models", {"providers": []})]
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,
