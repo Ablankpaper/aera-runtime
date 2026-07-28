@@ -913,27 +913,14 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
-# Home paths whose directory skeleton has been created successfully in this
-# process. This keeps repeated read-only config loads off the mkdir/chmod hot
-# path while still re-running the full check if the home itself disappears.
-_HERMES_HOME_ENSURED: set[str] = set()
-
-
 def ensure_hermes_home():
     """Ensure ~/.hermes directory structure exists with secure permissions.
 
     In managed mode (NixOS), dirs are created by the activation script with
     setgid + group-writable (2770). We skip mkdir and set umask(0o007) so
     any files created (e.g. SOUL.md) are group-writable (0660).
-
-    The successful full check is memoized per HERMES_HOME. Profile switches
-    therefore validate the new path, and deleting the active home makes the
-    next call recreate or revalidate it as before.
     """
     home = get_hermes_home()
-    key = str(home)
-    if key in _HERMES_HOME_ENSURED and home.is_dir():
-        return
     # Named profiles must be created explicitly (e.g. ``hermes profile create``).
     # If a stale process keeps running after the profile was renamed/deleted,
     # silently mkdir-ing the old HERMES_HOME would resurrect an empty skeleton
@@ -960,9 +947,6 @@ def ensure_hermes_home():
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
         _ensure_default_soul_md(home)
-
-    _HERMES_HOME_ENSURED.add(key)
-
 
 def _ensure_hermes_home_managed(home: Path):
     """Managed-mode variant: verify dirs exist (activation creates them), seed SOUL.md."""
