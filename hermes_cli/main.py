@@ -4316,7 +4316,13 @@ def cmd_kanban(args):
     """Multi-profile collaboration board."""
     from hermes_cli.kanban import kanban_command
 
-    return kanban_command(args)
+    # `main()` deliberately supports many legacy handlers that return `None`,
+    # so it does not propagate every handler's return value.  Kanban is a
+    # machine-consumed command surface, though: Desktop uses the process exit
+    # status to decide whether a mutation actually succeeded.  Discarding the
+    # status made validation failures look successful and caused the Desktop
+    # "create board" dialog to close even though no board was persisted.
+    sys.exit(int(kanban_command(args) or 0))
 
 
 def cmd_project(args):

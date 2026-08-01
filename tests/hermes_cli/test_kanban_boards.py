@@ -535,9 +535,7 @@ class TestCLI:
     def test_board_flag_rejects_unknown(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
         r = _cli(["--board", "ghost", "list"], env_extra=env)
-        # main.py's dispatcher doesn't propagate return codes today, so we
-        # assert the user-visible signal: a stderr error message. Whether
-        # the exit code stays 0 is a separate (pre-existing) issue.
+        assert r.returncode != 0
         assert "does not exist" in r.stderr
 
     def test_board_flag_rejects_empty_board_dir(self, tmp_path):
@@ -545,7 +543,18 @@ class TestCLI:
         ghost = tmp_path / "kanban" / "boards" / "ghost"
         ghost.mkdir(parents=True)
         r = _cli(["--board", "ghost", "list"], env_extra=env)
+        assert r.returncode != 0
         assert "does not exist" in r.stderr
+
+    def test_boards_create_invalid_slug_returns_failure(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        r = _cli(["boards", "create", "测试看板"], env_extra=env)
+        assert r.returncode == 2
+        assert "invalid board slug" in r.stderr
+        data = json.loads(
+            _cli(["boards", "list", "--json"], env_extra=env).stdout,
+        )
+        assert [board["slug"] for board in data] == ["default"]
 
     def test_boards_rm_archives(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
