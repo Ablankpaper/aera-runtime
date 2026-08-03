@@ -2917,6 +2917,16 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Explicitly enrolled outbound connection to the Aera Admin control plane.
+    # Disabled by default: no identity lookup, DNS resolution, or network
+    # request occurs until the local operator runs `hermes platform enroll`.
+    # The device secret is stored separately in platform-control.json (0600).
+    "platform_control": {
+        "enabled": False,
+        "endpoint": "",
+        "heartbeat_seconds": 60,
+    },
+
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {

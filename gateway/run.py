@@ -8272,6 +8272,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         async def _stop_impl() -> None:
+            # Stop the opt-in outbound control client before adapters, stores,
+            # or other Runtime resources begin tearing down. The helper is
+            # bounded and a no-op when this Runtime was never enrolled.
+            try:
+                from hermes_cli.platform_control import stop_platform_control
+
+                await stop_platform_control(
+                    getattr(self, "_platform_control_task", None),
+                    getattr(self, "_platform_control_stop", asyncio.Event()),
+                )
+                self._platform_control_task = None
+            except Exception as _e:
+                logger.warning("Platform control shutdown failed: %s", _e)
+
             def _kill_tool_subprocesses(phase: str) -> None:
                 """Kill tool subprocesses + tear down terminal envs + browsers.
 
@@ -21583,6 +21597,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_code is not None:
             raise SystemExit(runner.exit_code)
         return True
+
+    # Start only after the gateway is genuinely running. The helper checks
+    # explicit config enablement plus a locally stored enrollment identity
+    # before it creates a task; the default path performs no network access.
+    from hermes_cli.platform_control import start_platform_control_if_enabled
+
+    platform_control_stop = asyncio.Event()
+    platform_control_task = start_platform_control_if_enabled(
+        platform_control_stop,
+        runner=runner,
+    )
+    runner._platform_control_stop = platform_control_stop
+    runner._platform_control_task = platform_control_task
     
     # Start the background cron scheduler via the resolved provider so
     # scheduled jobs fire automatically. The built-in provider is the
@@ -21623,6 +21650,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
+
+    # Covers clean-exit paths that set the shutdown event directly instead of
+    # entering GatewayRunner.stop(). Calling it twice is intentionally safe.
+    from hermes_cli.platform_control import stop_platform_control
+
+    await stop_platform_control(platform_control_task, platform_control_stop)
 
     try:
         from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive

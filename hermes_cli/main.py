@@ -319,6 +319,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.platform import build_platform_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -13169,6 +13170,12 @@ def cmd_claw(args):
     claw_command(args)
 
 
+def cmd_platform(args):
+    from hermes_cli.platform_control_cli import platform_command
+
+    return platform_command(args)
+
+
 def main():
     """Main entry point for hermes CLI."""
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
@@ -13363,6 +13370,10 @@ def main():
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )
+
+    # Explicit outbound Aera Admin enrollment. No upgrade/restart/rollback
+    # command is registered on this surface.
+    build_platform_parser(subparsers, cmd_platform=cmd_platform)
 
     # =========================================================================
     # lsp command
