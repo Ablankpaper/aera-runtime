@@ -3,6 +3,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import copy
+import hashlib
 import inspect
 import json
 import logging
@@ -13,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
@@ -1148,6 +1150,32 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     if payload is not None:
         params["payload"] = payload
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+
+
+@dataclass
+class _TextStreamEnvelope:
+    stream_id: str
+    next_seq: int = 1
+
+    @classmethod
+    def create(cls) -> "_TextStreamEnvelope":
+        return cls(stream_id=str(uuid.uuid4()))
+
+    def start(self) -> dict:
+        return {"stream_id": self.stream_id, "seq": 0}
+
+    def delta(self, text: str) -> dict:
+        seq = self.next_seq
+        self.next_seq += 1
+        return {"stream_id": self.stream_id, "seq": seq, "text": text}
+
+    def complete(self, text: str) -> dict:
+        return {
+            "stream_id": self.stream_id,
+            "final_seq": self.next_seq - 1,
+            "text": text,
+            "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        }
 
 
 _compute_host_supervisor = None
@@ -9243,7 +9271,6 @@ def _notification_poller_loop(
         if _claim is None:
             continue
         try:
-            _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
@@ -9311,7 +9338,6 @@ def _notification_poller_loop(
         if _claim is None:
             continue
         try:
-            _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
@@ -9401,7 +9427,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             agent.clear_interrupt()
         except Exception:
             pass
-    _emit("message.start", sid)
+    stream = _TextStreamEnvelope.create()
+    _emit("message.start", sid, stream.start())
 
     def run():
         approval_token = None
@@ -9527,7 +9554,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             def _stream(delta):
                 with session["history_lock"]:
                     _append_inflight_delta(session, delta)
-                payload = {"text": delta}
+                payload = stream.delta(delta)
                 if streamer and (r := streamer.feed(delta)) is not None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)
@@ -9648,12 +9675,19 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 raw = str(result)
                 status = "complete"
 
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            final_text = (
+                raw if isinstance(raw, str) else "" if raw is None else str(raw)
+            )
+            payload = {
+                **stream.complete(final_text),
+                "usage": _get_usage(agent),
+                "status": status,
+            }
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:
                 payload["warning"] = status_note
-            rendered = render_message(raw, cols)
+            rendered = render_message(final_text, cols)
             if rendered:
                 payload["rendered"] = rendered
             with session["history_lock"]:
@@ -9854,7 +9888,6 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     return
                 session["running"] = True
             try:
-                _emit("message.start", sid)
                 _run_prompt_submit(rid, sid, session, goal_followup)
             except Exception as _cont_exc:
                 print(
@@ -9900,7 +9933,6 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 if _claim is None:
                     continue
                 try:
-                    _emit("message.start", sid)
                     _run_prompt_submit(rid, sid, session, synth)
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:

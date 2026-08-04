@@ -29,6 +29,25 @@ export interface GatewayEvent<P = unknown> {
   type: GatewayEventName
 }
 
+export interface MessageStartPayload {
+  stream_id: string
+  seq: 0
+}
+
+export interface MessageDeltaPayload {
+  stream_id: string
+  seq: number
+  text: string
+}
+
+export interface MessageCompletePayload {
+  final_seq: number
+  status: string
+  stream_id: string
+  text: string
+  text_sha256: string
+}
+
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
 export type GatewayRequestId = number | string
 
