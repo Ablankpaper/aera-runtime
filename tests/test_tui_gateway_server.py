@@ -7676,14 +7676,17 @@ def test_goal_continuation_stream_integrity_emits_one_start_per_turn(monkeypatch
 def test_prompt_submit_blocked_reference_still_completes_stream(monkeypatch):
     import hashlib
 
+    model_calls: list[tuple[tuple, dict]] = []
+
     class _Agent:
         model = "test/model"
         base_url = ""
         api_key = ""
         provider = "test"
 
-        def run_conversation(self, *_args, **_kwargs):
-            raise AssertionError("blocked reference must not reach the model")
+        def run_conversation(self, *args, **kwargs):
+            model_calls.append((args, kwargs))
+            return {"final_response": "unexpected", "messages": []}
 
     fake_ctx = types.ModuleType("agent.context_references")
     fake_ctx.preprocess_context_references = (
@@ -7727,6 +7730,8 @@ def test_prompt_submit_blocked_reference_still_completes_stream(monkeypatch):
             payload for event, _sid, payload in emitted if event == "message.complete"
         ]
         assert len(starts) == 1
+        assert starts[0] == {"stream_id": starts[0]["stream_id"], "seq": 0}
+        assert not [event for event, _sid, _payload in emitted if event == "message.delta"]
         assert len(completions) == 1
         assert completions[0] == {
             "stream_id": starts[0]["stream_id"],
@@ -7735,6 +7740,7 @@ def test_prompt_submit_blocked_reference_still_completes_stream(monkeypatch):
             "text_sha256": hashlib.sha256(b"").hexdigest(),
             "status": "error",
         }
+        assert model_calls == []
     finally:
         server._sessions.pop("stream-integrity-blocked-sid", None)
 
@@ -7781,6 +7787,12 @@ def test_prompt_submit_exception_still_completes_stream_once(monkeypatch, tmp_pa
         assert len(starts) == 1
         assert len(deltas) == 1
         assert len(completions) == 1
+        assert starts[0] == {"stream_id": starts[0]["stream_id"], "seq": 0}
+        assert deltas[0] == {
+            "stream_id": starts[0]["stream_id"],
+            "seq": 1,
+            "text": "半",
+        }
         assert completions[0] == {
             "stream_id": starts[0]["stream_id"],
             "final_seq": 1,
@@ -7795,6 +7807,8 @@ def test_prompt_submit_exception_still_completes_stream_once(monkeypatch, tmp_pa
 def test_prompt_submit_post_completion_exception_does_not_emit_second_terminal(
     monkeypatch, tmp_path
 ):
+    order: list[str] = []
+
     class _Agent:
         def run_conversation(
             self, prompt, conversation_history=None, stream_callback=None
@@ -7809,6 +7823,7 @@ def test_prompt_submit_post_completion_exception_does_not_emit_second_terminal(
             }
 
     def _raise_after_completion():
+        order.append("post-completion failure")
         raise RuntimeError("post-completion hook failed")
 
     server._sessions["stream-integrity-post-complete-sid"] = _session(
@@ -7823,11 +7838,13 @@ def test_prompt_submit_post_completion_exception_does_not_emit_second_terminal(
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
 
     emitted: list[tuple[str, str, dict]] = []
-    monkeypatch.setattr(
-        server,
-        "_emit",
-        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
-    )
+
+    def _capture_emit(event, sid, payload=None):
+        if event == "message.complete":
+            order.append("message.complete")
+        emitted.append((event, sid, payload or {}))
+
+    monkeypatch.setattr(server, "_emit", _capture_emit)
 
     try:
         server.handle_request(
@@ -7847,6 +7864,7 @@ def test_prompt_submit_post_completion_exception_does_not_emit_second_terminal(
         assert len(completions) == 1
         assert completions[0]["status"] == "complete"
         assert completions[0]["text"] == "完整"
+        assert order == ["message.complete", "post-completion failure"]
     finally:
         server._sessions.pop("stream-integrity-post-complete-sid", None)
 
