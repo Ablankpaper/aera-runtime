@@ -102,6 +102,13 @@ class WSTransport:
         self._pending_tokens: list[str] = []
         self._token_flush_handle: asyncio.TimerHandle | None = None
         self._token_flush_armed = False
+        # Every socket write flows through this loop-owned queue. The queue and
+        # task are created lazily on the owning loop because tests and a few
+        # embedding paths construct WSTransport from a worker thread.
+        self._send_queue: asyncio.Queue[
+            tuple[list[str], asyncio.Future[bool] | None] | None
+        ] | None = None
+        self._writer_task: asyncio.Task[None] | None = None
 
     @staticmethod
     def _is_streaming_frame(obj: dict) -> bool:
@@ -149,10 +156,10 @@ class WSTransport:
             self._pending_tokens = []
             if on_loop:
                 # Fire-and-forget — don't block the loop waiting on itself.
-                self._loop.create_task(self._safe_send_many(batch))
-                return True
+                self._loop.call_soon(self._enqueue_send, batch)
+                return not self._closed
             fut = safe_schedule_threadsafe(
-                self._safe_send_many(batch), self._loop
+                self._enqueue_send_and_wait(batch), self._loop
             )
             if fut is None:
                 self._closed = True
@@ -204,7 +211,7 @@ class WSTransport:
                 return
             batch = self._pending_tokens
             self._pending_tokens = []
-            self._loop.create_task(self._safe_send_many(batch))
+            self._loop.call_soon(self._enqueue_send, batch)
 
     async def write_async(self, obj: dict) -> bool:
         """Send from the owning event loop. Awaits until the frame is on the wire."""
@@ -212,44 +219,132 @@ class WSTransport:
             return False
         # Flush any buffered streamed tokens ahead of this frame (RPC response /
         # control frame) so it can't overtake the tokens that preceded it.
+        ack = self._loop.create_future()
         with self._token_lock:
             pending = self._pending_tokens
             self._pending_tokens = []
-        if pending:
-            await self._safe_send_many(pending)
-        await self._safe_send(json.dumps(obj, ensure_ascii=False))
-        return not self._closed
+            pending.append(json.dumps(obj, ensure_ascii=False))
+            self._loop.call_soon(self._enqueue_send, pending, ack)
+        return await asyncio.shield(ack)
 
-    async def _safe_send(self, line: str) -> None:
+    def _ensure_writer(self) -> None:
+        """Create the queue and sole socket writer on the owning loop."""
+        if self._send_queue is None:
+            self._send_queue = asyncio.Queue()
+        if self._writer_task is None or self._writer_task.done():
+            self._writer_task = self._loop.create_task(self._drain_send_queue())
+
+    def _enqueue_send(
+        self,
+        lines: list[str],
+        ack: asyncio.Future[bool] | None = None,
+    ) -> None:
+        """Append one ordered batch. Must run on the socket's event loop."""
+        if self._closed:
+            if ack is not None and not ack.done():
+                ack.set_result(False)
+            return
+        self._ensure_writer()
+        assert self._send_queue is not None
+        self._send_queue.put_nowait((lines, ack))
+
+    async def _enqueue_send_and_wait(self, lines: list[str]) -> bool:
+        if self._closed:
+            return False
+        ack = self._loop.create_future()
+        self._enqueue_send(lines, ack)
+        return await asyncio.shield(ack)
+
+    async def _drain_send_queue(self) -> None:
+        assert self._send_queue is not None
+        active_ack: asyncio.Future[bool] | None = None
         try:
-            await self._ws.send_text(line)
-        except Exception as exc:
-            self._closed = True
-            _log.warning(
-                "ws send failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
-            )
+            while True:
+                item = await self._send_queue.get()
+                if item is None:
+                    return
+                lines, ack = item
+                active_ack = ack
+                ok = await self._safe_send_many(lines)
+                if ack is not None and not ack.done():
+                    ack.set_result(ok)
+                active_ack = None
+                if not ok:
+                    self._fail_queued_sends()
+                    return
+        except asyncio.CancelledError:
+            if active_ack is not None and not active_ack.done():
+                active_ack.set_result(False)
+            self._fail_queued_sends()
+            raise
 
-    async def _safe_send_many(self, lines: list[str]) -> None:
+    def _fail_queued_sends(self) -> None:
+        queue = self._send_queue
+        if queue is None:
+            return
+        while True:
+            try:
+                item = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            if item is None:
+                continue
+            _lines, ack = item
+            if ack is not None and not ack.done():
+                ack.set_result(False)
+
+    async def _safe_send_many(self, lines: list[str]) -> bool:
         """Send a batch of pre-serialized frames in order on the loop thread."""
         try:
             for line in lines:
                 await self._ws.send_text(line)
+            return True
         except Exception as exc:
             self._closed = True
             _log.warning(
                 "ws send failed peer=%s error_type=%s error=%s",
                 self._peer, type(exc).__name__, exc,
             )
+            return False
 
-    def close(self) -> None:
-        self._closed = True
-        # Cancel any pending coalesce flush. close() runs on the loop thread
-        # (the handle_ws finally), so touching the TimerHandle here is safe.
+    def _close_on_loop(self) -> asyncio.Task[None] | None:
         handle = self._token_flush_handle
         if handle is not None:
             handle.cancel()
             self._token_flush_handle = None
+        with self._token_lock:
+            self._pending_tokens = []
+            self._token_flush_armed = False
+        self._fail_queued_sends()
+        task = self._writer_task
+        if task is not None and not task.done():
+            task.cancel()
+        return task
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            on_loop = asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            self._close_on_loop()
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._close_on_loop)
+        except RuntimeError:
+            # The owner loop is already gone; there is no live writer to stop.
+            pass
+
+    async def aclose(self) -> None:
+        """Close and join the writer when called by the owning event loop."""
+        self._closed = True
+        task = self._close_on_loop()
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 def _ws_peer_label(ws: Any) -> str:
@@ -426,7 +521,7 @@ async def handle_ws(ws: Any) -> None:
         reaped_sessions = 0
         detached_sessions = 0
         if transport is not None:
-            transport.close()
+            await transport.aclose()
 
             # Reap sessions this transport owned (close_on_disconnect sidecar
             # sessions) or detach the rest to the drop sentinel so later emits
