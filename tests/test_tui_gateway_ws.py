@@ -297,3 +297,59 @@ def test_ws_single_writer_drops_completion_after_earlier_socket_failure(monkeypa
         transport.close()
 
     asyncio.run(run())
+
+
+def test_handle_ws_disconnect_joins_blocked_writer(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setattr(
+        mcp_startup,
+        "start_background_mcp_discovery",
+        lambda **_kwargs: None,
+    )
+
+    created: list[ws_mod.WSTransport] = []
+    real_transport = ws_mod.WSTransport
+    monkeypatch.setattr(
+        ws_mod,
+        "WSTransport",
+        lambda ws, loop, **kwargs: created.append(
+            real_transport(ws, loop, **kwargs)
+        )
+        or created[-1],
+    )
+
+    class BlockingWS:
+        def __init__(self):
+            self.calls = 0
+            self.pending_send_started = asyncio.Event()
+            self.never_release = asyncio.Event()
+            self.closed = False
+
+        async def accept(self):
+            pass
+
+        async def send_text(self, _line):
+            self.calls += 1
+            if self.calls > 1:
+                self.pending_send_started.set()
+                await self.never_release.wait()
+
+        async def receive_text(self):
+            transport = created[0]
+            transport._enqueue_send([json.dumps({"queued": True})])
+            await asyncio.wait_for(self.pending_send_started.wait(), timeout=1)
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            self.closed = True
+
+    ws = BlockingWS()
+    server._sessions.clear()
+    try:
+        asyncio.run(ws_mod.handle_ws(ws))
+    finally:
+        server._sessions.clear()
+
+    assert created[0]._writer_task is not None
+    assert created[0]._writer_task.done()
+    assert ws.closed is True

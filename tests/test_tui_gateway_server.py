@@ -7584,6 +7584,8 @@ class _ImmediateThread:
 
 
 def test_goal_continuation_stream_integrity_emits_one_start_per_turn(monkeypatch):
+    import uuid
+
     class _Agent:
         def __init__(self):
             self.turns = 0
@@ -7663,8 +7665,190 @@ def test_goal_continuation_stream_integrity_emits_one_start_per_turn(monkeypatch
             for payload in start_payloads
         )
         assert len({payload["stream_id"] for payload in start_payloads}) == 2
+        assert all(
+            str(uuid.UUID(payload["stream_id"])) == payload["stream_id"]
+            for payload in start_payloads
+        )
     finally:
         server._sessions.pop("stream-integrity-goal-sid", None)
+
+
+def test_prompt_submit_blocked_reference_still_completes_stream(monkeypatch):
+    import hashlib
+
+    class _Agent:
+        model = "test/model"
+        base_url = ""
+        api_key = ""
+        provider = "test"
+
+        def run_conversation(self, *_args, **_kwargs):
+            raise AssertionError("blocked reference must not reach the model")
+
+    fake_ctx = types.ModuleType("agent.context_references")
+    fake_ctx.preprocess_context_references = (
+        lambda *_args, **_kwargs: types.SimpleNamespace(
+            blocked=True,
+            message="",
+            warnings=["Context injection refused."],
+            references=[],
+            injected_tokens=0,
+        )
+    )
+    fake_meta = types.ModuleType("agent.model_metadata")
+    fake_meta.get_model_context_length = lambda *_args, **_kwargs: 100000
+
+    server._sessions["stream-integrity-blocked-sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setitem(sys.modules, "agent.context_references", fake_ctx)
+    monkeypatch.setitem(sys.modules, "agent.model_metadata", fake_meta)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+
+    try:
+        server.handle_request(
+            {
+                "id": "stream-integrity-blocked-turn",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "stream-integrity-blocked-sid",
+                    "text": "检查 @secret",
+                },
+            }
+        )
+
+        starts = [payload for event, _sid, payload in emitted if event == "message.start"]
+        completions = [
+            payload for event, _sid, payload in emitted if event == "message.complete"
+        ]
+        assert len(starts) == 1
+        assert len(completions) == 1
+        assert completions[0] == {
+            "stream_id": starts[0]["stream_id"],
+            "final_seq": 0,
+            "text": "",
+            "text_sha256": hashlib.sha256(b"").hexdigest(),
+            "status": "error",
+        }
+    finally:
+        server._sessions.pop("stream-integrity-blocked-sid", None)
+
+
+def test_prompt_submit_exception_still_completes_stream_once(monkeypatch, tmp_path):
+    import hashlib
+
+    class _Agent:
+        def run_conversation(
+            self, _prompt, conversation_history=None, stream_callback=None
+        ):
+            stream_callback("半")
+            raise RuntimeError("provider failed")
+
+    server._sessions["stream-integrity-error-sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_CRASH_LOG", str(tmp_path / "crash.log"))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+
+    try:
+        server.handle_request(
+            {
+                "id": "stream-integrity-error-turn",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "stream-integrity-error-sid",
+                    "text": "开始",
+                },
+            }
+        )
+
+        starts = [payload for event, _sid, payload in emitted if event == "message.start"]
+        deltas = [payload for event, _sid, payload in emitted if event == "message.delta"]
+        completions = [
+            payload for event, _sid, payload in emitted if event == "message.complete"
+        ]
+        assert len(starts) == 1
+        assert len(deltas) == 1
+        assert len(completions) == 1
+        assert completions[0] == {
+            "stream_id": starts[0]["stream_id"],
+            "final_seq": 1,
+            "text": "",
+            "text_sha256": hashlib.sha256(b"").hexdigest(),
+            "status": "error",
+        }
+    finally:
+        server._sessions.pop("stream-integrity-error-sid", None)
+
+
+def test_prompt_submit_post_completion_exception_does_not_emit_second_terminal(
+    monkeypatch, tmp_path
+):
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            stream_callback("完整")
+            return {
+                "final_response": "完整",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "完整"},
+                ],
+            }
+
+    def _raise_after_completion():
+        raise RuntimeError("post-completion hook failed")
+
+    server._sessions["stream-integrity-post-complete-sid"] = _session(
+        agent=_Agent()
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_CRASH_LOG", str(tmp_path / "crash.log"))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
+    monkeypatch.setattr(server, "_voice_tts_enabled", _raise_after_completion)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+
+    try:
+        server.handle_request(
+            {
+                "id": "stream-integrity-post-complete-turn",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "stream-integrity-post-complete-sid",
+                    "text": "开始",
+                },
+            }
+        )
+
+        completions = [
+            payload for event, _sid, payload in emitted if event == "message.complete"
+        ]
+        assert len(completions) == 1
+        assert completions[0]["status"] == "complete"
+        assert completions[0]["text"] == "完整"
+    finally:
+        server._sessions.pop("stream-integrity-post-complete-sid", None)
 
 
 def test_prompt_submit_stream_integrity_envelope_sequences_unicode(monkeypatch):

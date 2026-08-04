@@ -9435,6 +9435,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        terminal_emitted = False
+
+        def _emit_stream_completion(payload: dict) -> bool:
+            nonlocal terminal_emitted
+            if terminal_emitted:
+                return False
+            terminal_emitted = True
+            _emit("message.complete", sid, payload)
+            return True
+
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -9490,6 +9500,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             "message": "\n".join(ctx.warnings)
                             or "Context injection refused."
                         },
+                    )
+                    _emit_stream_completion(
+                        {**stream.complete(""), "status": "error"}
                     )
                     return
                 prompt = ctx.message
@@ -9692,7 +9705,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["rendered"] = rendered
             with session["history_lock"]:
                 _clear_inflight_turn(session)
-            _emit("message.complete", sid, payload)
+            _emit_stream_completion(payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge
@@ -9853,6 +9866,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
             _emit("error", sid, {"message": str(e)})
+            _emit_stream_completion({**stream.complete(""), "status": "error"})
         finally:
             try:
                 if approval_token is not None:
