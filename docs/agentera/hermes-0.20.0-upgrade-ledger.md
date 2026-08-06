@@ -141,6 +141,20 @@ input/config/environment. A conclusive key is not rerun unchanged.
 
 ## Conflict decisions
 
-Conflict-by-conflict resolutions and focused RED/GREEN evidence will be added
-here during the single pinned merge. Until then, this section intentionally
-contains no speculative resolution claims.
+| Conflict | Resolution decision | Focused behavior owner |
+| --- | --- | --- |
+| `agent/credential_pool.py` | Adopt upstream's read-only config loader and detailed rationale; it is behavior-equivalent to Aera's performance fix. | `tests/test_tui_gateway_server.py`, compatibility Profile tests |
+| `hermes_cli/config.py` | Adopt upstream config changes but retain Aera's deliberate removal of process-lifetime home-setup memoization, so every load still repairs permissions and required directories. | `tests/cron/test_file_permissions.py`, compatibility Profile tests |
+| `pyproject.toml` | Use upstream `0.20.0` dev/security pins and retain AgentEra's `zstandard==0.25.0` archive dependency; regenerate `uv.lock` with `uv lock`. | `tests/test_project_metadata.py`, Runtime archive/smoke tests |
+| `scripts/release.py` | Adopt upstream's frozen legacy map plus one-file-per-email registry; migrate the AgentEra mapping to `contributors/emails/1468650289@qq.com`. | release dry-run and candidate contributor audit |
+| `tests/gateway/test_stream_consumer_fresh_final.py` | Retain Aera's monotonic-aging and fallback behavior cases that upstream pruned. | this focused file |
+| `tests/hermes_cli/test_kanban_boards.py` | Retain unknown/empty board rejection, invalid-slug exit status, and archive cases. | this focused file |
+| `tests/hermes_cli/test_kanban_core_functionality.py` | Retain Aera's run/event and bulk-completion behavior cases. | this focused file |
+| `tests/hermes_cli/test_models.py` | Retain deterministic catalog fixtures while adopting upstream model behavior tests. | this focused file |
+| `tests/test_tui_gateway_server.py` | Keep Aera model-inventory scheduling, custom endpoint transport, stream-integrity, and error-lifecycle cases; also keep upstream battery and service-tier cases. | this focused file |
+| `tests/test_tui_gateway_ws.py` | Keep Aera queue/single-writer/order/teardown cases and upstream cross-batch contract. | this focused file |
+| `tui_gateway/server.py` | Adopt upstream's split handler modules and session lifecycle. Port Aera custom endpoint `base_url` into `methods_session.py`. Preserve sequenced stream envelopes for normal, error, notification, auto-continue, Kanban, and mirrored child turns while retaining upstream crash markers, billing errors, and resume replay. | server + websocket focused files; `@hermes/shared` check |
+| `tui_gateway/ws.py` | Keep Aera's loop-owned queue as the sole socket writer, integrate upstream live-transport unregister, and join the writer during disconnect. The queue supersedes the weaker lock-only implementation while preserving whole-batch ordering. | websocket focused file |
+
+The merge input remains exactly Aera `a68171ea` plus reviewed upstream
+`42708f8b`; no content from moving `upstream/main` is included.
