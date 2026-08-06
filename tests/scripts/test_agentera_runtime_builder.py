@@ -113,6 +113,9 @@ class FakeRunner:
         self.machine = machine
         self.wheel_has_main = wheel_has_main
         self.calls: list[tuple[tuple[str, ...], Path]] = []
+        self.environments: list[
+            tuple[tuple[str, ...], Mapping[str, str] | None]
+        ] = []
 
     def __call__(
         self,
@@ -121,9 +124,9 @@ class FakeRunner:
         cwd: Path,
         env: Mapping[str, str] | None = None,
     ) -> CommandResult:
-        del env
         command = tuple(str(arg) for arg in args)
         self.calls.append((command, cwd))
+        self.environments.append((command, env))
         if command[:3] == ("git", "status", "--porcelain=v1"):
             return CommandResult("?? local.txt\n" if self.dirty else "", "")
         if command == ("git", "rev-parse", "HEAD"):
@@ -207,6 +210,12 @@ def test_builder_uses_locked_native_flow_and_emits_smoked_archive(
     assert "--require-hashes" in install
     assert "--no-deps" in install
     assert "--break-system-packages" in install
+    wheel_environment = next(
+        environment
+        for command, environment in runner.environments
+        if command[:3] == ("uv", "build", "--wheel")
+    )
+    assert wheel_environment == {"AGENTERA_RUNTIME_RELEASE_BUILD": "1"}
 
 
 @pytest.mark.parametrize(

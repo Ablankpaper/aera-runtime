@@ -304,6 +304,7 @@ def _build_wheel(repo_root: Path, wheelhouse: Path, runner: CommandRunner) -> Pa
         runner(
             ("uv", "build", "--wheel", "--out-dir", str(wheelhouse)),
             cwd=repo_root,
+            env={"AGENTERA_RUNTIME_RELEASE_BUILD": "1"},
         )
     finally:
         if generated_build.exists() and not generated_build.is_symlink():

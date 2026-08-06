@@ -14,10 +14,11 @@ to raise an error when run outside a Nix build. The PEP 517
 fires for ``uv build``, ``pip wheel``, ``python -m build``, and direct
 ``setup.py`` invocations alike.
 
-The one legitimate consumer of ``build_wheel`` is uv2nix, which calls
-``setuptools.build_meta.build_wheel`` (→ ``bdist_wheel``) inside a Nix
-build sandbox. ``nix/python.nix`` sets ``HERMES_NIX_BUILD=1`` on the
-Hermes package derivation, so only that build may create an artifact.
+The legitimate consumers of ``build_wheel`` are uv2nix and the reviewed
+AgentEra Runtime Seed builder. ``nix/python.nix`` sets
+``HERMES_NIX_BUILD=1`` inside a Nix build sandbox. The Seed builder sets
+``AGENTERA_RUNTIME_RELEASE_BUILD=1`` only for its wheel subprocess. AgentEra
+does not use this exception for source distributions.
 
 Editable installs (``uv sync``, ``pip install -e .``, ``nix develop``)
 use ``build_editable``, which does NOT call ``bdist_wheel`` — it calls
@@ -30,6 +31,9 @@ from setuptools import setup
 from setuptools.command.sdist import sdist
 
 _IN_NIX_BUILD = os.environ.get("HERMES_NIX_BUILD") == "1"
+_IN_AGENTERA_RUNTIME_BUILD = (
+    os.environ.get("AGENTERA_RUNTIME_RELEASE_BUILD") == "1"
+)
 
 _BLOCK_MESSAGE = (
     "Building wheels or sdists for hermes-agent is not supported.\n"
@@ -63,7 +67,7 @@ try:
 
     class _GuardedBdistWheel(bdist_wheel):
         def run(self, *args, **kwargs):
-            if not _IN_NIX_BUILD:
+            if not (_IN_NIX_BUILD or _IN_AGENTERA_RUNTIME_BUILD):
                 raise RuntimeError(_BLOCK_MESSAGE)
             return super().run(*args, **kwargs)
 

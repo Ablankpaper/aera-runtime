@@ -11,7 +11,13 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.CompletedProcess[str]:
+def _build_artifact(
+    kind: str,
+    tmp_path,
+    *,
+    nix_build: bool,
+    agentera_runtime_build: bool = False,
+) -> subprocess.CompletedProcess[str]:
     """Invoke the real PEP 517 hook (build_sdist / build_wheel) as a subprocess.
 
     The wheel and sdist guards live in SEPARATE cmdclass entries in setup.py
@@ -27,6 +33,10 @@ def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.Compl
         env["HERMES_NIX_BUILD"] = "1"
     else:
         env.pop("HERMES_NIX_BUILD", None)
+    if agentera_runtime_build:
+        env["AGENTERA_RUNTIME_RELEASE_BUILD"] = "1"
+    else:
+        env.pop("AGENTERA_RUNTIME_RELEASE_BUILD", None)
     # Redirect setuptools' scratch dirs (build/, *.egg-info) into tmp_path so
     # the allowed-marker build doesn't litter the real worktree.
     scratch = tmp_path / "scratch"
@@ -70,3 +80,27 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
 
     assert result.returncode == 0, result.stderr
     assert list(tmp_path.glob(artifact_glob))
+
+
+def test_wheel_build_allows_explicit_agentera_runtime_build_marker(tmp_path):
+    result = _build_artifact(
+        "wheel",
+        tmp_path,
+        nix_build=False,
+        agentera_runtime_build=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert list(tmp_path.glob("hermes_agent-*.whl"))
+
+
+def test_sdist_build_rejects_agentera_runtime_build_marker(tmp_path):
+    result = _build_artifact(
+        "sdist",
+        tmp_path,
+        nix_build=False,
+        agentera_runtime_build=True,
+    )
+
+    assert result.returncode != 0
+    assert "Building wheels or sdists for hermes-agent is not supported" in result.stderr
