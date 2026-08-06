@@ -429,6 +429,9 @@ def _write_launchers(seed_root: Path) -> None:
     posix = runtime / "hermes"
     posix.write_text(
         '#!/bin/sh\nHERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
+        'export HERMES_BUNDLED_SKILLS="$HERE/../python/skills"\n'
+        'export HERMES_OPTIONAL_SKILLS="$HERE/../python/optional-skills"\n'
+        'export HERMES_OPTIONAL_MCPS="$HERE/../python/optional-mcps"\n'
         'exec "$HERE/../python/bin/python3" -m hermes_cli.main "$@"\n',
         encoding="utf-8",
         newline="\n",
@@ -437,6 +440,9 @@ def _write_launchers(seed_root: Path) -> None:
     (runtime / "hermes.cmd").write_text(
         "@echo off\r\n"
         'set "RUNTIME_DIR=%~dp0"\r\n'
+        'set "HERMES_BUNDLED_SKILLS=%RUNTIME_DIR%..\\python\\skills"\r\n'
+        'set "HERMES_OPTIONAL_SKILLS=%RUNTIME_DIR%..\\python\\optional-skills"\r\n'
+        'set "HERMES_OPTIONAL_MCPS=%RUNTIME_DIR%..\\python\\optional-mcps"\r\n'
         '"%RUNTIME_DIR%..\\python\\python.exe" -m hermes_cli.main %*\r\n',
         encoding="utf-8",
         newline="",

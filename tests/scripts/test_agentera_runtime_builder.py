@@ -23,6 +23,7 @@ from scripts.agentera_runtime_dist.builder import (
     normalize_installed_runtime,
 )
 from scripts.agentera_runtime_dist.protocol import RuntimeTarget
+from scripts.agentera_runtime_dist.smoke import extract_runtime_archive
 
 _SOURCE_COMMIT = "a" * 40
 
@@ -196,6 +197,12 @@ def test_builder_uses_locked_native_flow_and_emits_smoked_archive(
     assert not (source_tree / "build").exists()
     assert len(smoked) == 1
     assert smoked[0].name == "agentera-runtime"
+    extracted = extract_runtime_archive(result.archive_path, tmp_path / "extracted")
+    posix_launcher = (extracted / "runtime" / "hermes").read_text(encoding="utf-8")
+    windows_launcher = (extracted / "runtime" / "hermes.cmd").read_text(encoding="utf-8")
+    for name in ("HERMES_BUNDLED_SKILLS", "HERMES_OPTIONAL_SKILLS", "HERMES_OPTIONAL_MCPS"):
+        assert f'export {name}="$HERE/../python/' in posix_launcher
+        assert f'set "{name}=%RUNTIME_DIR%..\\python\\' in windows_launcher
     commands = [command for command, _cwd in runner.calls]
     export = next(command for command in commands if command[:2] == ("uv", "export"))
     install = next(
