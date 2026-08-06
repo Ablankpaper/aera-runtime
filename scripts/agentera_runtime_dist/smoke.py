@@ -42,6 +42,9 @@ _SMOKE_IMPORTS = (
     "tools.skill_manager_tool",
     "agent.curator",
 )
+_EXPECTED_RUNTIME_INITIALIZATION = frozenset(
+    {"SOUL.md", "audio_cache", "hooks", "image_cache", "memories", "pairing"}
+)
 _NETWORK_GUARD = """\
 import socket
 
@@ -311,6 +314,7 @@ def _boundary_data_snapshot(boundary: Path) -> dict[str, str]:
         path: digest
         for path, digest in snapshot_tree(boundary).items()
         if path != ".update_check" and path != "logs" and not path.startswith("logs/")
+        and path not in _EXPECTED_RUNTIME_INITIALIZATION
     }
 
 
