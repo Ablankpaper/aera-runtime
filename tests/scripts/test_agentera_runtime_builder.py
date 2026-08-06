@@ -23,6 +23,7 @@ from scripts.agentera_runtime_dist.builder import (
     normalize_installed_runtime,
 )
 from scripts.agentera_runtime_dist.protocol import RuntimeTarget
+from scripts.agentera_runtime_dist.smoke import extract_runtime_archive
 
 _SOURCE_COMMIT = "a" * 40
 
@@ -103,6 +104,7 @@ class FakeRunner:
         system: str = "Darwin",
         machine: str = "arm64",
         wheel_has_main: bool = True,
+        wheel_has_frontend: bool = True,
     ) -> None:
         self.source_tree = source_tree
         self.managed_python = managed_python
@@ -112,7 +114,11 @@ class FakeRunner:
         self.system = system
         self.machine = machine
         self.wheel_has_main = wheel_has_main
+        self.wheel_has_frontend = wheel_has_frontend
         self.calls: list[tuple[tuple[str, ...], Path]] = []
+        self.environments: list[
+            tuple[tuple[str, ...], Mapping[str, str] | None]
+        ] = []
 
     def __call__(
         self,
@@ -121,9 +127,9 @@ class FakeRunner:
         cwd: Path,
         env: Mapping[str, str] | None = None,
     ) -> CommandResult:
-        del env
         command = tuple(str(arg) for arg in args)
         self.calls.append((command, cwd))
+        self.environments.append((command, env))
         if command[:3] == ("git", "status", "--porcelain=v1"):
             return CommandResult("?? local.txt\n" if self.dirty else "", "")
         if command == ("git", "rev-parse", "HEAD"):
@@ -153,6 +159,13 @@ class FakeRunner:
             with zipfile.ZipFile(wheel, "w") as archive:
                 member = "hermes_cli/main.py" if self.wheel_has_main else "other.py"
                 archive.writestr(member, "def main(): pass\n")
+                if self.wheel_has_frontend:
+                    archive.writestr(
+                        "hermes_cli/web_dist/index.html", "<html></html>"
+                    )
+                    archive.writestr(
+                        "hermes_cli/tui_dist/entry.js", "console.log('tui')"
+                    )
             return CommandResult("", "")
         if command[:2] == ("uv", "export"):
             output_file = Path(command[command.index("--output-file") + 1])
@@ -193,6 +206,12 @@ def test_builder_uses_locked_native_flow_and_emits_smoked_archive(
     assert not (source_tree / "build").exists()
     assert len(smoked) == 1
     assert smoked[0].name == "agentera-runtime"
+    extracted = extract_runtime_archive(result.archive_path, tmp_path / "extracted")
+    posix_launcher = (extracted / "runtime" / "hermes").read_text(encoding="utf-8")
+    windows_launcher = (extracted / "runtime" / "hermes.cmd").read_text(encoding="utf-8")
+    for name in ("HERMES_BUNDLED_SKILLS", "HERMES_OPTIONAL_SKILLS", "HERMES_OPTIONAL_MCPS"):
+        assert f'export {name}="$HERE/../python/' in posix_launcher
+        assert f'set "{name}=%RUNTIME_DIR%..\\python\\' in windows_launcher
     commands = [command for command, _cwd in runner.calls]
     export = next(command for command in commands if command[:2] == ("uv", "export"))
     install = next(
@@ -207,6 +226,12 @@ def test_builder_uses_locked_native_flow_and_emits_smoked_archive(
     assert "--require-hashes" in install
     assert "--no-deps" in install
     assert "--break-system-packages" in install
+    wheel_environment = next(
+        environment
+        for command, environment in runner.environments
+        if command[:3] == ("uv", "build", "--wheel")
+    )
+    assert wheel_environment == {"AGENTERA_RUNTIME_RELEASE_BUILD": "1"}
 
 
 @pytest.mark.parametrize(
@@ -273,6 +298,23 @@ def test_builder_rejects_wheel_without_hermes_main(
     runner = FakeRunner(source_tree, managed_python, wheel_has_main=False)
 
     with pytest.raises(BuildError, match="hermes_cli.main"):
+        assemble_runtime_seed(
+            _config(source_tree, managed_python, tmp_path),
+            runner=runner,
+            smoke_runner=lambda _path: None,
+        )
+
+
+def test_builder_rejects_wheel_without_built_frontend_assets(
+    source_tree: Path, managed_python: Path, tmp_path: Path
+):
+    runner = FakeRunner(
+        source_tree,
+        managed_python,
+        wheel_has_frontend=False,
+    )
+
+    with pytest.raises(BuildError, match="frontend assets"):
         assemble_runtime_seed(
             _config(source_tree, managed_python, tmp_path),
             runner=runner,

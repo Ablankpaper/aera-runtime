@@ -304,6 +304,7 @@ def _build_wheel(repo_root: Path, wheelhouse: Path, runner: CommandRunner) -> Pa
         runner(
             ("uv", "build", "--wheel", "--out-dir", str(wheelhouse)),
             cwd=repo_root,
+            env={"AGENTERA_RUNTIME_RELEASE_BUILD": "1"},
         )
     finally:
         if generated_build.exists() and not generated_build.is_symlink():
@@ -322,6 +323,16 @@ def _assert_wheel_entrypoint(wheel: Path) -> None:
         raise BuildError("Hermes wheel is invalid") from exc
     if "hermes_cli/main.py" not in names:
         raise BuildError("Hermes wheel does not contain hermes_cli.main")
+    required_frontend_assets = {
+        "hermes_cli/web_dist/index.html",
+        "hermes_cli/tui_dist/entry.js",
+    }
+    missing_frontend_assets = sorted(required_frontend_assets - names)
+    if missing_frontend_assets:
+        raise BuildError(
+            "Hermes wheel does not contain built frontend assets: "
+            + ", ".join(missing_frontend_assets)
+        )
 
 
 def _export_locked_requirements(
@@ -428,6 +439,9 @@ def _write_launchers(seed_root: Path) -> None:
     posix = runtime / "hermes"
     posix.write_text(
         '#!/bin/sh\nHERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
+        'export HERMES_BUNDLED_SKILLS="$HERE/../python/skills"\n'
+        'export HERMES_OPTIONAL_SKILLS="$HERE/../python/optional-skills"\n'
+        'export HERMES_OPTIONAL_MCPS="$HERE/../python/optional-mcps"\n'
         'exec "$HERE/../python/bin/python3" -m hermes_cli.main "$@"\n',
         encoding="utf-8",
         newline="\n",
@@ -436,6 +450,9 @@ def _write_launchers(seed_root: Path) -> None:
     (runtime / "hermes.cmd").write_text(
         "@echo off\r\n"
         'set "RUNTIME_DIR=%~dp0"\r\n'
+        'set "HERMES_BUNDLED_SKILLS=%RUNTIME_DIR%..\\python\\skills"\r\n'
+        'set "HERMES_OPTIONAL_SKILLS=%RUNTIME_DIR%..\\python\\optional-skills"\r\n'
+        'set "HERMES_OPTIONAL_MCPS=%RUNTIME_DIR%..\\python\\optional-mcps"\r\n'
         '"%RUNTIME_DIR%..\\python\\python.exe" -m hermes_cli.main %*\r\n',
         encoding="utf-8",
         newline="",

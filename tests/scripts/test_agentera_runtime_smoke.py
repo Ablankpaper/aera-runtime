@@ -59,10 +59,15 @@ def seed_root(tmp_path: Path) -> Path:
 
 class RecordingSmokeRunner:
     def __init__(
-        self, *, mutate: bool = False, write_operational_state: bool = False
+        self,
+        *,
+        mutate: bool = False,
+        write_operational_state: bool = False,
+        write_first_launch_state: bool = False,
     ) -> None:
         self.mutate = mutate
         self.write_operational_state = write_operational_state
+        self.write_first_launch_state = write_first_launch_state
         self.calls: list[tuple[tuple[str, ...], Mapping[str, str]]] = []
 
     def __call__(
@@ -84,6 +89,11 @@ class RecordingSmokeRunner:
             (home / "logs").mkdir(exist_ok=True)
             (home / "logs" / "agent.log").write_text("smoke log\n", encoding="utf-8")
             (home / ".update_check").write_text("{}", encoding="utf-8")
+        if self.write_first_launch_state:
+            home = Path(env["HERMES_HOME"])
+            for name in ("audio_cache", "hooks", "image_cache", "memories", "pairing"):
+                (home / name).mkdir(exist_ok=True)
+            (home / "SOUL.md").write_text("# default identity\n", encoding="utf-8")
         return SmokeCommandResult("ok\n", "")
 
 
@@ -128,6 +138,14 @@ def test_smoke_allows_only_disposable_logs_and_update_cache(seed_root: Path):
     run_seed_smoke(
         seed_root,
         runner=RecordingSmokeRunner(write_operational_state=True),
+        hermes_home=seed_root.parent / "boundary",
+    )
+
+
+def test_smoke_allows_expected_first_launch_state(seed_root: Path):
+    run_seed_smoke(
+        seed_root,
+        runner=RecordingSmokeRunner(write_first_launch_state=True),
         hermes_home=seed_root.parent / "boundary",
     )
 
