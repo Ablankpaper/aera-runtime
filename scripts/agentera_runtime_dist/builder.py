@@ -323,6 +323,16 @@ def _assert_wheel_entrypoint(wheel: Path) -> None:
         raise BuildError("Hermes wheel is invalid") from exc
     if "hermes_cli/main.py" not in names:
         raise BuildError("Hermes wheel does not contain hermes_cli.main")
+    required_frontend_assets = {
+        "hermes_cli/web_dist/index.html",
+        "hermes_cli/tui_dist/entry.js",
+    }
+    missing_frontend_assets = sorted(required_frontend_assets - names)
+    if missing_frontend_assets:
+        raise BuildError(
+            "Hermes wheel does not contain built frontend assets: "
+            + ", ".join(missing_frontend_assets)
+        )
 
 
 def _export_locked_requirements(

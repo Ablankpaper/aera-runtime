@@ -104,6 +104,7 @@ class FakeRunner:
         system: str = "Darwin",
         machine: str = "arm64",
         wheel_has_main: bool = True,
+        wheel_has_frontend: bool = True,
     ) -> None:
         self.source_tree = source_tree
         self.managed_python = managed_python
@@ -113,6 +114,7 @@ class FakeRunner:
         self.system = system
         self.machine = machine
         self.wheel_has_main = wheel_has_main
+        self.wheel_has_frontend = wheel_has_frontend
         self.calls: list[tuple[tuple[str, ...], Path]] = []
         self.environments: list[
             tuple[tuple[str, ...], Mapping[str, str] | None]
@@ -157,6 +159,13 @@ class FakeRunner:
             with zipfile.ZipFile(wheel, "w") as archive:
                 member = "hermes_cli/main.py" if self.wheel_has_main else "other.py"
                 archive.writestr(member, "def main(): pass\n")
+                if self.wheel_has_frontend:
+                    archive.writestr(
+                        "hermes_cli/web_dist/index.html", "<html></html>"
+                    )
+                    archive.writestr(
+                        "hermes_cli/tui_dist/entry.js", "console.log('tui')"
+                    )
             return CommandResult("", "")
         if command[:2] == ("uv", "export"):
             output_file = Path(command[command.index("--output-file") + 1])
@@ -289,6 +298,23 @@ def test_builder_rejects_wheel_without_hermes_main(
     runner = FakeRunner(source_tree, managed_python, wheel_has_main=False)
 
     with pytest.raises(BuildError, match="hermes_cli.main"):
+        assemble_runtime_seed(
+            _config(source_tree, managed_python, tmp_path),
+            runner=runner,
+            smoke_runner=lambda _path: None,
+        )
+
+
+def test_builder_rejects_wheel_without_built_frontend_assets(
+    source_tree: Path, managed_python: Path, tmp_path: Path
+):
+    runner = FakeRunner(
+        source_tree,
+        managed_python,
+        wheel_has_frontend=False,
+    )
+
+    with pytest.raises(BuildError, match="frontend assets"):
         assemble_runtime_seed(
             _config(source_tree, managed_python, tmp_path),
             runner=runner,
