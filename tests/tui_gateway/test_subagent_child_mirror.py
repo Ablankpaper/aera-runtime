@@ -10,6 +10,7 @@ shows a real midstream turn instead of sitting silent until persistence.
 
 from __future__ import annotations
 
+import hashlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -110,7 +111,14 @@ def test_live_child_session_gets_native_stream(server, emits):
     assert child[2][1] == {"text": "hmm"}
     # The rotated-out tool closes with the same id it opened with.
     assert child[3][1]["tool_id"] == first_tool["tool_id"]
-    assert child[6][1] == {"text": "done deal"}
+    stream_id = child[0][1]["stream_id"]
+    assert child[0][1] == {"stream_id": stream_id, "seq": 0}
+    assert child[6][1] == {
+        "stream_id": stream_id,
+        "final_seq": 0,
+        "text": "done deal",
+        "text_sha256": hashlib.sha256(b"done deal").hexdigest(),
+    }
 
     # Parent relay is untouched alongside the mirror.
     assert [e for e, s, _ in emits if s == "parent-sid"] == [
@@ -215,9 +223,17 @@ def test_start_mirrors_as_immediate_header_line(server, emits):
     _relay(server, "subagent.progress", preview="step 1/3", child_session_id="child-1")
 
     child = [(e, p) for e, s, p in emits if s == "live-1"]
+    stream_id = child[0][1]["stream_id"]
     assert child == [
-        ("message.start", None),
-        ("message.delta", {"text": "starting child branch\n"}),
+        ("message.start", {"stream_id": stream_id, "seq": 0}),
+        (
+            "message.delta",
+            {
+                "stream_id": stream_id,
+                "seq": 1,
+                "text": "starting child branch\n",
+            },
+        ),
     ]
 
 
@@ -231,10 +247,16 @@ def test_text_mirrors_as_message_delta(server, emits):
     _relay(server, "subagent.text", preview="the answer.", child_session_id="child-1")
 
     child = [(e, p) for e, s, p in emits if s == "live-1"]
+    stream_id = child[0][1]["stream_id"]
     assert child == [
-        ("message.start", None),
-        ("message.delta", {"text": "Here is "}),
-        ("message.delta", {"text": "the answer."}),
+        ("message.start", {"stream_id": stream_id, "seq": 0}),
+        (
+            "message.delta",
+            {"stream_id": stream_id, "seq": 1, "text": "Here is "},
+        ),
+        (
+            "message.delta",
+            {"stream_id": stream_id, "seq": 2, "text": "the answer."},
+        ),
     ]
-
 

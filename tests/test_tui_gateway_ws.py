@@ -395,12 +395,14 @@ def test_ws_transport_preserves_cross_batch_order():
         transport = ws_mod.WSTransport(
             FakeWS(), asyncio.get_running_loop(), peer="batch-order-test"
         )
-        first = asyncio.create_task(transport._safe_send_many(["A1", "A2"]))
+        first = asyncio.create_task(
+            transport._enqueue_send_and_wait(["A1", "A2"])
+        )
         await first_entered.wait()
 
         async def send_second():
             second_started.set()
-            await transport._safe_send_many(["B1", "B2"])
+            return await transport._enqueue_send_and_wait(["B1", "B2"])
 
         second = asyncio.create_task(send_second())
         await second_started.wait()
@@ -410,7 +412,8 @@ def test_ws_transport_preserves_cross_batch_order():
         assert entered == ["A1"]
 
         release_first.set()
-        await asyncio.gather(first, second)
+        assert await asyncio.gather(first, second) == [True, True]
         assert entered == ["A1", "A2", "B1", "B2"]
+        await transport.aclose()
 
     asyncio.run(scenario())

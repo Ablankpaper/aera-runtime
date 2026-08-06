@@ -12081,7 +12081,7 @@ def test_goal_continuation_stream_integrity_emits_one_start_per_turn(monkeypatch
             self.turns = 0
 
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
         ):
             self.turns += 1
             stream_callback("回")
@@ -12240,7 +12240,7 @@ def test_prompt_submit_exception_still_completes_stream_once(monkeypatch, tmp_pa
 
     class _Agent:
         def run_conversation(
-            self, _prompt, conversation_history=None, stream_callback=None
+            self, _prompt, conversation_history=None, stream_callback=None, **_kwargs
         ):
             stream_callback("半")
             raise RuntimeError("provider failed")
@@ -12283,12 +12283,17 @@ def test_prompt_submit_exception_still_completes_stream_once(monkeypatch, tmp_pa
             "seq": 1,
             "text": "半",
         }
-        assert completions[0] == {
+        completion = dict(completions[0])
+        assert isinstance(completion.pop("usage", None), dict)
+        assert completion == {
             "stream_id": starts[0]["stream_id"],
             "final_seq": 1,
-            "text": "",
-            "text_sha256": hashlib.sha256(b"").hexdigest(),
+            "text": "半",
+            "text_sha256": hashlib.sha256("半".encode("utf-8")).hexdigest(),
             "status": "error",
+            "error": "provider failed",
+            "recoverable": True,
+            "partial": True,
         }
     finally:
         server._sessions.pop("stream-integrity-error-sid", None)
@@ -12301,7 +12306,7 @@ def test_prompt_submit_post_completion_exception_does_not_emit_second_terminal(
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
         ):
             stream_callback("完整")
             return {
@@ -12323,6 +12328,11 @@ def test_prompt_submit_post_completion_exception_does_not_emit_second_terminal(
     monkeypatch.setattr(server, "_CRASH_LOG", str(tmp_path / "crash.log"))
     monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
     monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
+    # Streaming TTS now probes its runtime flag at turn start. Keep this
+    # post-completion hook test focused on the terminal-emission guard by
+    # bypassing that start-of-turn probe; the fallback below still invokes the
+    # raising hook after the legal completion frame.
+    monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
     monkeypatch.setattr(server, "_voice_tts_enabled", _raise_after_completion)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
@@ -12367,7 +12377,7 @@ def test_prompt_submit_stream_integrity_envelope_sequences_unicode(monkeypatch):
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
         ):
             for code_point in final_text:
                 stream_callback(code_point)
