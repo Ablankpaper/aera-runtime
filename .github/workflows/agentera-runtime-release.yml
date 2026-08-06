@@ -58,7 +58,7 @@ jobs:
       channel: ${{ steps.metadata.outputs.channel }}
     steps:
       - name: Checkout reviewed source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
@@ -139,7 +139,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout exact source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ needs.compatibility.outputs.source_commit }}
@@ -194,7 +194,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout exact source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ needs.compatibility.outputs.source_commit }}
@@ -250,7 +250,7 @@ jobs:
     environment: runtime-production
     steps:
       - name: Checkout exact verifier source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ needs.compatibility.outputs.source_commit }}
