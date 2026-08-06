@@ -46,7 +46,7 @@ class TestFetchOpenRouterModels:
                 return False
 
             def read(self):
-                return b'{"data":[{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
+                return b'{"data":[{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.8-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
         with patch(
@@ -59,7 +59,7 @@ class TestFetchOpenRouterModels:
 
         assert models == [
             ("anthropic/claude-opus-4.8", "recommended"),
-            ("qwen/qwen3.7-max", ""),
+            ("qwen/qwen3.8-max", ""),
             ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
         ]
 
@@ -146,7 +146,7 @@ class TestFetchOpenRouterModels:
                 return (
                     b'{"data":['
                     b'{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},'
-                    b'{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}}'
+                    b'{"id":"qwen/qwen3.8-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}}'
                     b']}'
                 )
 
@@ -161,7 +161,7 @@ class TestFetchOpenRouterModels:
 
         ids = [mid for mid, _ in models]
         assert "anthropic/claude-opus-4.8" in ids
-        assert "qwen/qwen3.7-max" in ids
+        assert "qwen/qwen3.8-max" in ids
 
 
 class TestOpenRouterToolSupportHelper:

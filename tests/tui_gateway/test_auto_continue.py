@@ -260,7 +260,9 @@ def test_fresh_marker_schedules_continuation(emits, schedule_env, marker_home):
     assert text.startswith("[System note: Your previous turn was interrupted")
     assert "fix the flaky test" in text
     assert kwargs["display_kind"] == "auto_continue"
-    assert ("message.start", "sid", None) in [(e, s, p) for e, s, p in emits]
+    # The sequenced message.start belongs to _run_prompt_submit, which this
+    # scheduling fixture replaces. The scheduler itself emits only status.
+    assert not [event for event, _sid, _payload in emits if event == "message.start"]
 
 
 def test_stale_marker_is_cleared_not_continued(schedule_env, marker_home, monkeypatch):
@@ -372,5 +374,4 @@ def test_failed_agent_build_leaves_marker_for_retry(
 
 
 # ── End to end: continuation runs a real turn and clears the marker ────
-
 

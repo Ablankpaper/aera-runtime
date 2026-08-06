@@ -289,7 +289,8 @@ class TestNotificationPollerLoopKanbanWiring:
 
         status_texts = [p["text"] for e, p in emits if e == "status.update" and p]
         assert any(tid in t for t in status_texts), status_texts
-        assert any(e == "message.start" for e, _ in emits)
+        # The real _run_prompt_submit emits the sequenced message.start. This
+        # poller fixture replaces it and proves dispatch through ``submits``.
         assert any(tid in text for text in submits), submits
         assert session["running"] is True  # poller claimed the turn
         assert not session.get("_kanban_pending")

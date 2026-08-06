@@ -1,25 +1,29 @@
-"""ensure_hermes_home is memoized per home path (perf: it runs on every
-load_config), but a deleted home must still be recreated on the next call."""
+"""``ensure_hermes_home`` repairs every active home on every call.
+
+Aera deliberately does not memoize this process-lifetime check: profiles may
+be repaired or switched while the Runtime stays alive, so both missing
+subdirectories and a missing home must be restored on the next config load.
+"""
 
 import shutil
 
 from hermes_cli import config as cfg
 
 
-def test_repeat_calls_are_memoized_but_deleted_home_is_recreated(tmp_path, monkeypatch):
+def test_repeat_calls_repair_deleted_subdir_and_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     cfg.ensure_hermes_home()
     assert (home / "sessions").is_dir()
 
-    # Memoized: a second call must not recreate a removed SUBDIR (the fast
-    # path only re-checks the home root)…
+    # A later config load repairs a removed required subdirectory even though
+    # the home itself still exists.
     shutil.rmtree(home / "sessions")
     cfg.ensure_hermes_home()
-    assert not (home / "sessions").exists()
+    assert (home / "sessions").is_dir()
 
-    # …but a vanished HOME re-runs the full walk and restores the skeleton.
+    # A vanished home also restores the full skeleton.
     shutil.rmtree(home)
     cfg.ensure_hermes_home()
     assert (home / "sessions").is_dir()
