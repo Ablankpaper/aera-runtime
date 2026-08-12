@@ -2229,7 +2229,11 @@ def _profile_image_generation_enabled(config: dict) -> bool:
     after this helper in :func:`_get_platform_tools`.
     """
     image_cfg = config.get("image_gen") or {}
-    return not isinstance(image_cfg, dict) or image_cfg.get("enabled") is not False
+    if not isinstance(image_cfg, dict):
+        return True
+    # Desktop's generic YAML writer persists boolean UI choices as strings.
+    # Treat its exact false literal as the same explicit Profile opt-out.
+    return image_cfg.get("enabled") not in {False, "false"}
 
 
 def _platform_default_includes_toolset(platform: str, toolset: str) -> bool:

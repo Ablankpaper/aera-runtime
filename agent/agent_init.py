@@ -529,6 +529,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
+    request_tool_policy=None,
 ):
     """
     Initialize the AI Agent.
@@ -830,6 +831,7 @@ def init_agent(
     # Store toolset filtering options
     agent.enabled_toolsets = enabled_toolsets
     agent.disabled_toolsets = disabled_toolsets
+    agent.request_tool_policy = request_tool_policy
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
@@ -1431,6 +1433,12 @@ def init_agent(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        allowed_tool_names=(
+            request_tool_policy.allowed if request_tool_policy is not None else None
+        ),
+        denied_tool_names=(
+            request_tool_policy.denied if request_tool_policy is not None else None
+        ),
     )
     
     # Show tool configuration and store valid tool names for validation
@@ -1762,6 +1770,8 @@ def init_agent(
 
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
     _inject_memory_provider_tools(agent)
+    from model_tools import apply_request_tool_policy_to_agent as _apply_request_tool_policy
+    _apply_request_tool_policy(agent)
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
@@ -2617,6 +2627,8 @@ def init_agent(
             agent.valid_tool_names.add(_tname)
             agent._context_engine_tool_names.add(_tname)
             _existing_tool_names.add(_tname)
+
+    _apply_request_tool_policy(agent)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

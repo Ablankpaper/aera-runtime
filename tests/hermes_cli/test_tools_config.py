@@ -748,6 +748,17 @@ def test_image_generation_explicit_profile_disable_and_agent_veto_win():
     assert "image_gen" not in disabled_by_agent
 
 
+def test_image_generation_accepts_desktop_string_disable():
+    """Desktop's generic config writer persists booleans as YAML strings."""
+    enabled = _get_platform_tools(
+        {"image_gen": {"enabled": "false"}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+
+    assert "image_gen" not in enabled
+
+
 def test_image_generation_does_not_widen_a_narrow_platform_composite():
     """Profile defaults recover capability parity but do not widen webhook/API surfaces."""
     enabled = _get_platform_tools(

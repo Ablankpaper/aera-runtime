@@ -1495,6 +1495,31 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_execution_layer_blocks_request_policy_denied_stale_tool(self, agent):
+        """A stale schema/name set cannot bypass the signed request policy."""
+        agent.request_tool_policy = SimpleNamespace(
+            allowed=frozenset({"web_search"}),
+            denied=frozenset({"web_search"}),
+        )
+        agent.valid_tool_names.add("web_search")
+        tc = _mock_tool_call(
+            name="web_search",
+            arguments='{"q":"must not run"}',
+            call_id="policy-denied-1",
+        )
+        messages = []
+
+        with patch("run_agent.handle_function_call") as mock_hfc:
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tc]),
+                messages,
+                "task-1",
+            )
+
+        mock_hfc.assert_not_called()
+        assert len(messages) == 1
+        assert "not available in this session" in messages[0]["content"]
+
     def test_sequential_tool_calls_run_without_delay(self, agent):
         """Two sequential tool calls execute back-to-back with no sleep between them."""
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -6046,4 +6071,3 @@ class TestMemoryContextSanitization:
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
         assert "how is the honcho working" in result
-
