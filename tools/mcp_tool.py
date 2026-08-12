@@ -6805,6 +6805,18 @@ def refresh_agent_mcp_tools(
     # half-swap. ``staged_engine_names`` are the context-engine routing names
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
+    request_policy = getattr(agent, "request_tool_policy", None)
+    if request_policy is not None:
+        from model_tools import request_tool_name_allowed
+        new_defs = [
+            tool
+            for tool in new_defs
+            if request_tool_name_allowed(
+                tool.get("function", {}).get("name", ""), request_policy
+            )
+        ]
+        new_names = {tool["function"]["name"] for tool in new_defs}
+        staged_engine_names.intersection_update(new_names)
 
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a

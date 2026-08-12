@@ -308,10 +308,23 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    request_policy = getattr(agent, "request_tool_policy", None)
+    allowed_tool_names = (
+        getattr(request_policy, "allowed", None)
+        if request_policy is not None
+        else None
+    )
+    denied_tool_names = (
+        getattr(request_policy, "denied", None)
+        if request_policy is not None
+        else None
+    )
     cache_key = (
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        allowed_tool_names,
+        denied_tool_names,
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -322,6 +335,8 @@ def _tool_search_scoped_names(agent) -> frozenset:
             disabled_toolsets=disabled,
             quiet_mode=True,
             skip_tool_search_assembly=True,
+            allowed_tool_names=allowed_tool_names,
+            denied_tool_names=denied_tool_names,
         ) or []
         names = _ts.scoped_deferrable_names(scoped_defs)
     except Exception:
@@ -451,6 +466,17 @@ def _run_agent_tool_execution_middleware(
 
         block_message = scope_block
         block_error_type = "tool_scope_block"
+        if block_message is None:
+            try:
+                from model_tools import request_tool_name_allowed
+
+                request_policy = getattr(agent, "request_tool_policy", None)
+                if not request_tool_name_allowed(function_name, request_policy):
+                    block_message = (
+                        f"'{function_name}' is not available in this session."
+                    )
+            except Exception:
+                pass
         if block_message is None:
             block_error_type = "plugin_block"
 

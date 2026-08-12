@@ -45,6 +45,31 @@ logger = logging.getLogger(__name__)
 _WARNED_DISABLED_BUNDLES: set = set()
 
 
+def request_tool_name_allowed(name: str, policy: Any) -> bool:
+    """Return whether an exact Runtime tool name survives a request policy."""
+    if policy is None:
+        return True
+    allowed = getattr(policy, "allowed", None)
+    denied = getattr(policy, "denied", frozenset()) or frozenset()
+    return (allowed is None or name in allowed) and name not in denied
+
+
+def apply_request_tool_policy_to_agent(agent: Any) -> None:
+    """Atomically keep an agent's schema and execution-name set policy-safe."""
+    policy = getattr(agent, "request_tool_policy", None)
+    if policy is None:
+        return
+    filtered = [
+        tool
+        for tool in (getattr(agent, "tools", None) or [])
+        if request_tool_name_allowed(tool.get("function", {}).get("name", ""), policy)
+    ]
+    agent.tools = filtered
+    agent.valid_tool_names = {
+        tool["function"]["name"] for tool in filtered
+    }
+
+
 def _is_delegated_child_context() -> bool:
     try:
         from agent.delegation_context import is_delegated_child_context
@@ -296,6 +321,8 @@ def get_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    allowed_tool_names: Optional[frozenset[str]] = None,
+    denied_tool_names: Optional[frozenset[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -343,6 +370,8 @@ def get_tool_definitions(
                 bool(skip_tool_search_assembly),
                 _is_delegated_child_context(),
                 profile_scope,
+                allowed_tool_names,
+                denied_tool_names,
             )
         cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
         if cached is not None:
@@ -354,8 +383,14 @@ def get_tool_definitions(
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+    result = _compute_tool_definitions(
+        enabled_toolsets,
+        disabled_toolsets,
+        quiet_mode,
+        skip_tool_search_assembly=skip_tool_search_assembly,
+        allowed_tool_names=allowed_tool_names,
+        denied_tool_names=denied_tool_names,
+    )
     if quiet_mode and cache_key is not None:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -381,6 +416,8 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    allowed_tool_names: Optional[frozenset[str]] = None,
+    denied_tool_names: Optional[frozenset[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -469,6 +506,19 @@ def _compute_tool_definitions(
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+
+    # Request policy is an exact Runtime-name intersection, never a toolset
+    # expansion. An explicit empty allowlist is therefore deny-all.
+    denied_names = denied_tool_names or frozenset()
+    if allowed_tool_names is not None or denied_names:
+        filtered_tools = [
+            tool
+            for tool in filtered_tools
+            if (
+                (allowed_tool_names is None or tool["function"]["name"] in allowed_tool_names)
+                and tool["function"]["name"] not in denied_names
+            )
+        ]
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

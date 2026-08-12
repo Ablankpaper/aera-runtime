@@ -291,6 +291,28 @@ class TestGenerate:
         assert "raw upstream body" not in caplog.text
         assert fake_client.images.generate.call_count == 1
 
+    def test_client_construction_error_is_redacted_from_result_and_logs(
+        self, monkeypatch, caplog,
+    ):
+        caplog.set_level("DEBUG", logger=openai_plugin.__name__)
+        secret = "constructor-secret-must-not-leak"
+        monkeypatch.setenv("IMAGE_GEN_OPENAI_API_KEY", secret)
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.side_effect = RuntimeError(
+            f"Authorization: Bearer {secret}; client setup body"
+        )
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = openai_plugin.OpenAIImageGenProvider().generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        combined = result["error"] + caplog.text
+        assert secret not in combined
+        assert "Authorization" not in combined
+        assert "client setup body" not in combined
+        assert fake_openai.OpenAI.call_count == 1
+
     def test_edit_uses_dedicated_relay_model(self, tmp_path, monkeypatch):
         (tmp_path / "config.yaml").write_text(
             "image_gen:\n"
@@ -349,6 +371,36 @@ class TestGenerate:
         assert "Authorization" not in combined
         assert "raw edit body" not in combined
         assert fake_client.images.edit.call_count == 1
+
+    def test_source_image_read_error_is_redacted_from_result_and_logs(
+        self, monkeypatch, caplog,
+    ):
+        caplog.set_level("DEBUG", logger=openai_plugin.__name__)
+        monkeypatch.setenv("IMAGE_GEN_OPENAI_API_KEY", "image-test-key")
+        private_path = "/private/customer/secret-source.png"
+        raw_error = "filesystem-token-must-not-leak"
+        fake_client = MagicMock()
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with (
+            patch.dict("sys.modules", {"openai": fake_openai}),
+            patch(
+                "plugins.image_gen.openai._load_image_bytes",
+                side_effect=OSError(f"{raw_error}: {private_path}"),
+            ),
+        ):
+            result = openai_plugin.OpenAIImageGenProvider().generate(
+                "make it blue",
+                image_url=private_path,
+            )
+
+        assert result["success"] is False
+        assert result["error_type"] == "io_error"
+        combined = result["error"] + caplog.text
+        assert private_path not in combined
+        assert raw_error not in combined
+        fake_client.images.edit.assert_not_called()
 
     def test_b64_saves_to_cache(self, provider, tmp_path):
         png_bytes = bytes.fromhex(_PNG_HEX)

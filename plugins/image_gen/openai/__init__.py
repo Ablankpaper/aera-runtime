@@ -362,7 +362,18 @@ class OpenAIImageGenProvider(ImageGenProvider):
         client_kwargs: Dict[str, Any] = {"api_key": api_key, "max_retries": 0}
         if base_url:
             client_kwargs["base_url"] = base_url
-        client = openai.OpenAI(**client_kwargs)
+        try:
+            client = openai.OpenAI(**client_kwargs)
+        except Exception:
+            logger.debug("OpenAI image client construction failed")
+            return error_response(
+                error=_safe_provider_error("client construction"),
+                error_type="api_error",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         if is_edit:
             # images.edit() expects file-like objects. Download/read each
@@ -376,9 +387,10 @@ class OpenAIImageGenProvider(ImageGenProvider):
                     bio = io.BytesIO(data)
                     bio.name = fname
                     files.append(bio)
-            except Exception as exc:
+            except Exception:
+                logger.debug("OpenAI source image loading failed")
                 return error_response(
-                    error=f"Could not load source image for editing: {exc}",
+                    error="Could not load source image for editing",
                     error_type="io_error",
                     provider="openai",
                     model=tier_id,

@@ -112,6 +112,32 @@ def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch):
     assert all(t["function"]["name"] != "memory_search" for t in agent.tools)
 
 
+def test_refresh_cannot_reinject_request_policy_denied_tools(monkeypatch):
+    """MCP and memory refresh paths cannot widen a signed conversation policy."""
+    agent = _agent(["read_file"])
+    agent.request_tool_policy = types.SimpleNamespace(
+        allowed=frozenset({"read_file", "memory_search"}),
+        denied=frozenset({"memory_search"}),
+    )
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {"name": "memory_search", "description": "", "parameters": {}}
+        ]
+    )
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kw: [_tool("read_file"), _tool("memory_search")],
+    )
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert agent.valid_tool_names == {"read_file"}
+    assert [item["function"]["name"] for item in agent.tools] == ["read_file"]
+
+
 def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
     """#5544: context-engine tools must NOT be re-injected on a restricted
     toolset. A platform with enabled_toolsets that excludes context_engine

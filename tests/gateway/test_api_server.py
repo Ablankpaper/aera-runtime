@@ -39,6 +39,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.platforms import api_server as api_server_module
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +226,37 @@ class TestAdapterInit:
         assert captured["checkpoint_max_snapshots"] == 7
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
+
+
+class TestRequestToolPolicy:
+    def test_parser_returns_immutable_exact_name_sets(self):
+        policy = api_server_module._parse_request_tool_policy(
+            {
+                "allowed": ["image_generate", "mcp_docs_read"],
+                "denied": ["terminal"],
+            }
+        )
+
+        assert policy.allowed == frozenset({"image_generate", "mcp_docs_read"})
+        assert policy.denied == frozenset({"terminal"})
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            {},
+            {"allowed": [], "denied": [], "extra": []},
+            {"allowed": "image_generate", "denied": []},
+            {"allowed": [], "denied": "terminal"},
+            {"allowed": ["image_generate", "image_generate"], "denied": []},
+            {"allowed": ["image_generate"], "denied": ["image_generate"]},
+            {"allowed": ["x" * 129], "denied": []},
+            {"allowed": ["bad tool"], "denied": []},
+            {"allowed": [f"tool_{index}" for index in range(513)], "denied": []},
+        ],
+    )
+    def test_parser_rejects_malformed_or_ambiguous_policy(self, value):
+        with pytest.raises(ValueError):
+            api_server_module._parse_request_tool_policy(value)
 
 
 # ---------------------------------------------------------------------------
@@ -870,6 +902,7 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["request_tool_policy"] is True
             assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
@@ -961,6 +994,50 @@ class TestToolsetsEndpoint:
 
 
 class TestChatCompletionsEndpoint:
+    @pytest.mark.asyncio
+    async def test_passes_valid_request_tool_policy_to_agent_boundary(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [{"role": "user", "content": "draw"}],
+                        "aera_tool_policy": {
+                            "allowed": ["read_file"],
+                            "denied": ["image_generate"],
+                        },
+                    },
+                )
+
+        assert resp.status == 200
+        policy = mock_run.call_args.kwargs["request_tool_policy"]
+        assert policy.allowed == frozenset({"read_file"})
+        assert policy.denied == frozenset({"image_generate"})
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_request_tool_policy_before_agent_creation(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [{"role": "user", "content": "draw"}],
+                        "aera_tool_policy": {
+                            "allowed": ["image_generate"],
+                            "denied": ["image_generate"],
+                        },
+                    },
+                )
+
+        assert resp.status == 400
+        mock_run.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, adapter):
         app = _create_app(adapter)
@@ -1317,6 +1394,30 @@ class TestDeriveChatSessionId:
 
 
 class TestResponsesEndpoint:
+    @pytest.mark.asyncio
+    async def test_passes_valid_request_tool_policy_to_agent_boundary(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "draw",
+                        "aera_tool_policy": {
+                            "allowed": ["read_file"],
+                            "denied": ["image_generate"],
+                        },
+                    },
+                )
+
+        assert resp.status == 200
+        policy = mock_run.call_args.kwargs["request_tool_policy"]
+        assert policy.allowed == frozenset({"read_file"})
+        assert policy.denied == frozenset({"image_generate"})
 
 
     @pytest.mark.asyncio
@@ -2859,4 +2960,3 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
-
