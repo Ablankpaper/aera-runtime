@@ -717,6 +717,48 @@ def test_agent_disabled_toolsets_still_wins():
     assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
 
 
+def test_image_generation_defaults_on_for_explicit_cli_toolsets():
+    """A partial saved CLI selection must not silently remove conversation images."""
+    enabled = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["web"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+
+    assert "image_gen" in enabled
+
+
+def test_image_generation_explicit_profile_disable_and_agent_veto_win():
+    """A Profile disable is respected, and the final global veto remains final."""
+    disabled_by_profile = _get_platform_tools(
+        {"image_gen": {"enabled": False}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    disabled_by_agent = _get_platform_tools(
+        {
+            "image_gen": {"enabled": True},
+            "agent": {"disabled_toolsets": ["image_gen"]},
+        },
+        "cli",
+        include_default_mcp_servers=False,
+    )
+
+    assert "image_gen" not in disabled_by_profile
+    assert "image_gen" not in disabled_by_agent
+
+
+def test_image_generation_does_not_widen_a_narrow_platform_composite():
+    """Profile defaults recover capability parity but do not widen webhook/API surfaces."""
+    enabled = _get_platform_tools(
+        {"platform_toolsets": {"webhook": ["web"]}},
+        "webhook",
+        include_default_mcp_servers=False,
+    )
+
+    assert "image_gen" not in enabled
+
+
 @_requires_recently_shipped
 def test_platforms_whose_composite_excludes_it_are_left_narrow():
     """Parity is the justification, so don't widen a deliberately small
