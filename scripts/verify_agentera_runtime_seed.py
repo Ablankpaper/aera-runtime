@@ -38,7 +38,7 @@ def _parser() -> argparse.ArgumentParser:
         metavar="KEY_ID=PUBLIC_PEM",
         help="Trusted Ed25519 public key; may be repeated for rotation.",
     )
-    parser.add_argument("--repository", default="bignormal/aera-runtime")
+    parser.add_argument("--repository", default="Ablankpaper/aera-runtime")
     parser.add_argument("--desktop-version", required=True)
     parser.add_argument(
         "--channel", action="append", choices=("candidate", "stable"), default=None

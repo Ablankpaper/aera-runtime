@@ -39,7 +39,7 @@ from scripts.agentera_runtime_dist.smoke import (
 )
 
 EXPECTED_PYTHON_VERSION = "3.11.15"
-DEFAULT_SOURCE_REPOSITORY = "bignormal/aera-runtime"
+DEFAULT_SOURCE_REPOSITORY = "Ablankpaper/aera-runtime"
 _RUNTIME_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._-]{0,127}\Z")
 _SOURCE_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _STRIP_DIRECTORY_NAMES = frozenset({"__pycache__", ".pytest_cache", "tests", "test"})

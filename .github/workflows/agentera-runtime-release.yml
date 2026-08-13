@@ -362,7 +362,7 @@ jobs:
                   raise SystemExit("native artifacts disagree on Runtime version")
               if metadata["source_commit"] != source_commit:
                   raise SystemExit("native artifacts disagree on source commit")
-              if metadata["source_repository"] != "bignormal/aera-runtime":
+              if metadata["source_repository"] != "Ablankpaper/aera-runtime":
                   raise SystemExit("native artifact repository is not approved")
 
               archive_name = metadata["archive_name"]
@@ -417,7 +417,7 @@ jobs:
               "key_id": key_id,
               "channel": channel,
               "runtime_version": runtime_version,
-              "source_repository": "bignormal/aera-runtime",
+              "source_repository": "Ablankpaper/aera-runtime",
               "source_commit": source_commit,
               "release_tag": release_tag,
               "created_at": created_at,
@@ -454,7 +454,7 @@ jobs:
                           signature_path=signature_path,
                           trusted_public_keys={key_id: public_pem},
                           context=ManifestValidationContext(
-                              repository="bignormal/aera-runtime",
+                              repository="Ablankpaper/aera-runtime",
                               target=RuntimeTarget(target[0], target[1]),
                               desktop_version="9999.0.0",
                               allowed_channels=frozenset({channel}),

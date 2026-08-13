@@ -220,7 +220,7 @@ def test_signed_verifier_checks_manifest_archive_and_smokes(
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "key_id": "runtime-2026-01",
         "runtime_version": "0.18.2-agentera.1",
-        "source_repository": "bignormal/aera-runtime",
+        "source_repository": "Ablankpaper/aera-runtime",
         "source_commit": "a" * 40,
         "channel": "candidate",
         "platform": "darwin",
@@ -265,7 +265,7 @@ def test_signed_verifier_checks_manifest_archive_and_smokes(
         signature_path=signature_path,
         trusted_public_keys={"runtime-2026-01": public_pem},
         context=ManifestValidationContext(
-            repository="bignormal/aera-runtime",
+            repository="Ablankpaper/aera-runtime",
             target=RuntimeTarget("darwin", "arm64"),
             desktop_version="0.1.0",
             allowed_channels=frozenset({"candidate"}),
@@ -285,7 +285,7 @@ def test_signed_verifier_checks_manifest_archive_and_smokes(
             signature_path=signature_path,
             trusted_public_keys={"runtime-2026-01": public_pem},
             context=ManifestValidationContext(
-                repository="bignormal/aera-runtime",
+                repository="Ablankpaper/aera-runtime",
                 target=RuntimeTarget("darwin", "arm64"),
                 desktop_version="0.1.0",
                 allowed_channels=frozenset({"candidate"}),

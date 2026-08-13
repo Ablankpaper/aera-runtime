@@ -29,7 +29,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--repo-root", type=Path, default=REPOSITORY_ROOT)
     parser.add_argument(
-        "--source-repository", default="bignormal/aera-runtime", metavar="OWNER/NAME"
+        "--source-repository", default="Ablankpaper/aera-runtime", metavar="OWNER/NAME"
     )
     parser.add_argument("--minimum-desktop-version", default="0.1.0")
     parser.add_argument("--compatibility-gate-revision", type=int, default=1)
