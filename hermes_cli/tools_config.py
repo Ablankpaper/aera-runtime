@@ -2195,7 +2195,7 @@ def _enable_recently_shipped_toolsets(
     from then on, and ``agent.disabled_toolsets`` is subtracted after every
     rule in :func:`_get_platform_tools`. Mutates ``enabled_toolsets`` in place.
     """
-    from toolsets import resolve_toolset
+    from toolsets import TOOLSETS, resolve_toolset
 
     offered = (config.get("known_builtin_toolsets") or {}).get(platform)
     declined = {str(ts) for ts in offered} if isinstance(offered, list) else set()
@@ -2243,7 +2243,7 @@ def _platform_default_includes_toolset(platform: str, toolset: str) -> bool:
     omits; they are not authority to add a tool to webhook/API/other surfaces
     whose authored platform composite never carried it.
     """
-    from toolsets import resolve_toolset
+    from toolsets import TOOLSETS, resolve_toolset
 
     platform_info = PLATFORMS.get(platform)
     default_toolset = (
@@ -2252,7 +2252,16 @@ def _platform_default_includes_toolset(platform: str, toolset: str) -> bool:
         else f"hermes-{platform}"
     )
     expected_tools = set(resolve_toolset(toolset, include_registry=False))
-    platform_tools = set(resolve_toolset(default_toolset, include_registry=False))
+    # Plugin platforms are registry-backed and have no static TOOLSETS entry;
+    # use the registry view for those authored composites. Keep static
+    # platforms on their authored static view so unrelated registry overlays
+    # cannot widen their parity decision.
+    platform_tools = set(
+        resolve_toolset(
+            default_toolset,
+            include_registry=default_toolset not in TOOLSETS,
+        )
+    )
     return bool(expected_tools and expected_tools.issubset(platform_tools))
 
 
@@ -2521,7 +2530,12 @@ def _get_platform_tools(
     # never widen a platform whose authored composite intentionally excludes it.
     if _platform_default_includes_toolset(platform, "image_gen"):
         if _profile_image_generation_enabled(config):
-            enabled_toolsets.add("image_gen")
+            offered = (config.get("known_builtin_toolsets") or {}).get(platform)
+            declined = (
+                {str(ts) for ts in offered} if isinstance(offered, list) else set()
+            )
+            if "image_gen" not in declined:
+                enabled_toolsets.add("image_gen")
         else:
             enabled_toolsets.discard("image_gen")
 
