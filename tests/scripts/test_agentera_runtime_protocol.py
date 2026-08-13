@@ -57,7 +57,7 @@ def _manifest(**overrides: object) -> dict[str, object]:
         "schema_version": 1,
         "key_id": "agentera-runtime-2026-01",
         "runtime_version": "0.18.2-agentera.1",
-        "source_repository": "bignormal/aera-runtime",
+        "source_repository": "Ablankpaper/aera-runtime",
         "source_commit": "a" * 40,
         "channel": "candidate",
         "platform": "darwin",
@@ -99,7 +99,7 @@ def _manifest(**overrides: object) -> dict[str, object]:
 
 def _context(**overrides: object) -> ManifestValidationContext:
     values: dict[str, object] = {
-        "repository": "bignormal/aera-runtime",
+        "repository": "Ablankpaper/aera-runtime",
         "target": RuntimeTarget(platform="darwin", arch="arm64"),
         "desktop_version": "0.7.3",
         "allowed_channels": frozenset({"candidate", "stable"}),
