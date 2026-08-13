@@ -1520,6 +1520,39 @@ class TestExecuteToolCalls:
         assert len(messages) == 1
         assert "not available in this session" in messages[0]["content"]
 
+    def test_execution_layer_fails_closed_when_request_policy_check_errors(
+        self, agent, monkeypatch
+    ):
+        """A signed request policy checker failure must not dispatch a tool."""
+        agent.request_tool_policy = SimpleNamespace(
+            allowed=frozenset({"web_search"}),
+            denied=frozenset(),
+        )
+        agent.valid_tool_names.add("web_search")
+        tc = _mock_tool_call(
+            name="web_search",
+            arguments='{"q":"must not run"}',
+            call_id="policy-check-error-1",
+        )
+        messages = []
+
+        def raise_check_error(*_args, **_kwargs):
+            raise RuntimeError("unexpected policy checker failure")
+
+        monkeypatch.setattr("model_tools.request_tool_name_allowed", raise_check_error)
+        with patch(
+            "run_agent.handle_function_call", return_value="unexpected dispatch"
+        ) as mock_hfc:
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tc]),
+                messages,
+                "task-1",
+            )
+
+        mock_hfc.assert_not_called()
+        assert len(messages) == 1
+        assert "not available in this session" in messages[0]["content"]
+
     def test_sequential_tool_calls_run_without_delay(self, agent):
         """Two sequential tool calls execute back-to-back with no sleep between them."""
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

@@ -475,8 +475,19 @@ def _run_agent_tool_execution_middleware(
                     block_message = (
                         f"'{function_name}' is not available in this session."
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                if request_policy is not None:
+                    # A signed request policy is an authorization boundary:
+                    # an unavailable checker must fail closed. Keep the log
+                    # controlled so provider or policy details are not shown.
+                    logger.error(
+                        "Request tool policy check failed for %s (%s)",
+                        function_name,
+                        type(exc).__name__,
+                    )
+                    block_message = (
+                        f"'{function_name}' is not available in this session."
+                    )
         if block_message is None:
             block_error_type = "plugin_block"
 

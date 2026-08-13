@@ -1230,7 +1230,7 @@ stt:
 # api.deepinfra.com/v1/openai/models filtered by the ``image-gen`` tag —
 # no model id is hardcoded, so retired models disappear automatically.
 # image_gen:
-#   enabled: true                    # Profile default; false disables conversations
+#   enabled: true                    # Profile default; false disables image generation
 #   provider: "deepinfra"
 #   deepinfra:
 #     # Leave `model` blank for the first live `image-gen`-tagged result.
@@ -1240,12 +1240,14 @@ stt:
 # image_gen:
 #   enabled: true
 #   provider: "openai"
-#   model: "gpt-image-1.5"
-#   aspect_ratio: "square"           # landscape | square | portrait
+#   model: "gpt-image-1.5"           # top-level fallback model
 #   openai:
 #     base_url: "https://relay.example/v1"
-#     model: "gpt-image-1.5"
+#     model: "gpt-image-1.5"         # overrides image_gen.model when set
 #     quality: "medium"               # low | medium | high
+#
+# The aspect_ratio is selected per image_gen tool call (landscape, square, or
+# portrait), rather than persisted in this provider configuration.
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)
