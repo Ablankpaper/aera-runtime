@@ -3696,6 +3696,15 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "IMAGE_GEN_OPENAI_API_KEY": {
+        "description": "API key for an OpenAI-compatible image-generation relay",
+        "prompt": "Image generation relay API key",
+        "url": None,
+        "tools": ["image_generate"],
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "VOICE_TOOLS_OPENAI_KEY": {
         "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
         "prompt": "OpenAI API Key (for Whisper STT + TTS)",
