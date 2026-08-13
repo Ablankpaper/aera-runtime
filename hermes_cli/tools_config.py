@@ -2195,7 +2195,7 @@ def _enable_recently_shipped_toolsets(
     from then on, and ``agent.disabled_toolsets`` is subtracted after every
     rule in :func:`_get_platform_tools`. Mutates ``enabled_toolsets`` in place.
     """
-    from toolsets import TOOLSETS, resolve_toolset
+    from toolsets import resolve_toolset
 
     offered = (config.get("known_builtin_toolsets") or {}).get(platform)
     declined = {str(ts) for ts in offered} if isinstance(offered, list) else set()
