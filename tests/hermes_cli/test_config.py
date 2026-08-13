@@ -502,6 +502,14 @@ class TestOptionalEnvVarsRegistry:
         from hermes_cli.config import OPTIONAL_ENV_VARS
         assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
 
+    def test_image_generation_api_key_is_catalogued_as_secret(self):
+        """The image relay key is visible to setup/doctor and masked."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        info = OPTIONAL_ENV_VARS["IMAGE_GEN_OPENAI_API_KEY"]
+        assert info["category"] == "provider"
+        assert info["password"] is True
+
 
     def test_tavily_api_key_has_url(self):
         """TAVILY_API_KEY has a URL."""
