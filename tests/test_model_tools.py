@@ -346,6 +346,76 @@ class TestDisabledToolsetsPlatformBundle:
         assert "discord" not in names
 
 
+class TestRequestToolPolicyFiltering:
+    def test_explicit_allowlist_intersects_profile_tools_without_expansion(self):
+        from model_tools import get_tool_definitions
+
+        names = {
+            item["function"]["name"]
+            for item in get_tool_definitions(
+                enabled_toolsets=["file"],
+                allowed_tool_names=frozenset({"read_file", "image_generate"}),
+                denied_tool_names=frozenset(),
+                quiet_mode=True,
+            )
+        }
+
+        assert names == {"read_file"}
+
+    def test_empty_allowlist_is_deny_all_and_denied_wins(self):
+        from model_tools import get_tool_definitions
+
+        assert get_tool_definitions(
+            allowed_tool_names=frozenset(),
+            denied_tool_names=frozenset(),
+            quiet_mode=True,
+        ) == []
+        names = {
+            item["function"]["name"]
+            for item in get_tool_definitions(
+                enabled_toolsets=["file"],
+                allowed_tool_names=frozenset({"read_file", "write_file"}),
+                denied_tool_names=frozenset({"read_file"}),
+                quiet_mode=True,
+            )
+        }
+        assert "read_file" not in names
+        assert "write_file" in names
+
+    def test_tool_search_scope_rebuild_inherits_request_policy(self, monkeypatch):
+        from agent.tool_executor import _tool_search_scoped_names
+
+        captured = {}
+
+        def fake_get_tool_definitions(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr("model_tools.get_tool_definitions", fake_get_tool_definitions)
+        agent = type(
+            "Agent",
+            (),
+            {
+                "enabled_toolsets": ["file", "image_gen"],
+                "disabled_toolsets": [],
+                "request_tool_policy": type(
+                    "Policy",
+                    (),
+                    {
+                        "allowed": frozenset({"read_file", "image_generate"}),
+                        "denied": frozenset({"image_generate"}),
+                    },
+                )(),
+            },
+        )()
+
+        assert _tool_search_scoped_names(agent) == frozenset()
+        assert captured["allowed_tool_names"] == frozenset(
+            {"read_file", "image_generate"}
+        )
+        assert captured["denied_tool_names"] == frozenset({"image_generate"})
+
+
 
 
     def test_bundle_non_core_tools_unknown_falls_back(self):

@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from agent.secret_scope import get_secret
 from agent.image_gen_provider import (
@@ -98,25 +99,99 @@ def _load_openai_config() -> Dict[str, Any]:
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     """Decide which tier to use and return ``(model_id, meta)``."""
     env_override = os.environ.get("OPENAI_IMAGE_MODEL")
-    if env_override and env_override in _MODELS:
-        return env_override, _MODELS[env_override]
+    if env_override and env_override.strip():
+        candidate = env_override.strip()
+        if candidate in _MODELS:
+            return candidate, _MODELS[candidate]
+        return candidate, {
+            "display": candidate,
+            "speed": "varies",
+            "strengths": "Configured OpenAI-compatible image model",
+            "quality": "medium",
+            "api_model": candidate,
+        }
 
     cfg = _load_openai_config()
-    openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
+    raw_openai_cfg = cfg.get("openai")
+    openai_cfg: Dict[str, Any] = (
+        raw_openai_cfg if isinstance(raw_openai_cfg, dict) else {}
+    )
     candidate: Optional[str] = None
-    if isinstance(openai_cfg, dict):
-        value = openai_cfg.get("model")
-        if isinstance(value, str) and value in _MODELS:
-            candidate = value
+    value = openai_cfg.get("model")
+    if isinstance(value, str) and value.strip():
+        candidate = value.strip()
     if candidate is None:
         top = cfg.get("model")
-        if isinstance(top, str) and top in _MODELS:
-            candidate = top
+        if isinstance(top, str) and top.strip():
+            candidate = top.strip()
 
     if candidate is not None:
-        return candidate, _MODELS[candidate]
+        if candidate in _MODELS:
+            meta = dict(_MODELS[candidate])
+        else:
+            meta = {
+                "display": candidate,
+                "speed": "varies",
+                "strengths": "Configured OpenAI-compatible image model",
+                "quality": "medium",
+                "api_model": candidate,
+            }
+        configured_quality = openai_cfg.get("quality") or cfg.get("quality")
+        if isinstance(configured_quality, str) and configured_quality in {"low", "medium", "high"}:
+            meta["quality"] = configured_quality
+        return candidate, meta
 
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
+
+
+def _resolve_api_key() -> Optional[str]:
+    """Resolve the image credential without coupling it to chat routing."""
+    return get_secret("IMAGE_GEN_OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
+
+
+def _resolve_base_url() -> Optional[str]:
+    """Return a validated OpenAI-compatible base URL, or None for SDK default."""
+    cfg = _load_openai_config()
+    raw_openai_cfg = cfg.get("openai")
+    openai_cfg: Dict[str, Any] = (
+        raw_openai_cfg if isinstance(raw_openai_cfg, dict) else {}
+    )
+    raw = openai_cfg.get("base_url")
+    if raw is None:
+        raw = cfg.get("base_url")
+    if raw is None or not str(raw).strip():
+        return None
+    value = str(raw).strip().rstrip("/")
+    parsed = urlparse(value)
+    if (
+        len(value) > 2048
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "Image generation base URL must be an absolute credential-free http(s) URL"
+        )
+    return value
+
+
+def _safe_provider_error(action: str) -> str:
+    """Map provider failures to a bounded message without copying raw bodies."""
+    return f"OpenAI image {action} failed; the upstream request was not completed"
+
+
+def _safe_url_host(value: object) -> str:
+    """Return a bounded host for diagnostics without exposing a signed URL."""
+    try:
+        host = urlparse(str(value)).hostname
+    except (TypeError, ValueError):
+        return "unknown"
+    if not host or len(host) > 255:
+        return "unknown"
+    return host
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +249,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
-        if not get_secret("OPENAI_API_KEY"):
+        if not _resolve_api_key():
             return False
         try:
             import openai  # noqa: F401
@@ -204,8 +279,8 @@ class OpenAIImageGenProvider(ImageGenProvider):
             "tag": "gpt-image-2 at low/medium/high quality tiers — text-to-image & image editing",
             "env_vars": [
                 {
-                    "key": "OPENAI_API_KEY",
-                    "prompt": "OpenAI API key",
+                    "key": "IMAGE_GEN_OPENAI_API_KEY",
+                    "prompt": "OpenAI-compatible image API key",
                     "url": "https://platform.openai.com/api-keys",
                 },
             ],
@@ -236,13 +311,13 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        api_key = get_secret("OPENAI_API_KEY")
+        api_key = _resolve_api_key()
         if not api_key:
             return error_response(
                 error=(
-                    "OPENAI_API_KEY not set. Run `hermes tools` → Image "
-                    "Generation → OpenAI to configure, or `hermes setup` "
-                    "to add the key."
+                    "IMAGE_GEN_OPENAI_API_KEY not set. Run `hermes tools` → "
+                    "Image Generation → OpenAI to configure it. Existing "
+                    "OPENAI_API_KEY credentials remain a compatibility fallback."
                 ),
                 error_type="auth_required",
                 provider="openai",
@@ -261,6 +336,18 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
+        try:
+            base_url = _resolve_base_url()
+        except ValueError as exc:
+            return error_response(
+                error=str(exc),
+                error_type="invalid_configuration",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        api_model = str(meta.get("api_model") or (API_MODEL if tier_id in _MODELS else tier_id))
 
         # Collect source images (primary + references) for image-to-image.
         sources: List[str] = []
@@ -272,7 +359,21 @@ class OpenAIImageGenProvider(ImageGenProvider):
         is_edit = bool(sources)
         modality = "image" if is_edit else "text"
 
-        client = openai.OpenAI(api_key=api_key)
+        client_kwargs: Dict[str, Any] = {"api_key": api_key, "max_retries": 0}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        try:
+            client = openai.OpenAI(**client_kwargs)
+        except Exception:
+            logger.debug("OpenAI image client construction failed")
+            return error_response(
+                error=_safe_provider_error("client construction"),
+                error_type="api_error",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         if is_edit:
             # images.edit() expects file-like objects. Download/read each
@@ -286,9 +387,10 @@ class OpenAIImageGenProvider(ImageGenProvider):
                     bio = io.BytesIO(data)
                     bio.name = fname
                     files.append(bio)
-            except Exception as exc:
+            except Exception:
+                logger.debug("OpenAI source image loading failed")
                 return error_response(
-                    error=f"Could not load source image for editing: {exc}",
+                    error="Could not load source image for editing",
                     error_type="io_error",
                     provider="openai",
                     model=tier_id,
@@ -298,17 +400,17 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
             try:
                 response = client.images.edit(
-                    model=API_MODEL,
+                    model=api_model,
                     image=files if len(files) > 1 else files[0],
                     prompt=prompt,
                     size=size,  # type: ignore[arg-type]  # _SIZES values are valid gpt-image sizes
                     quality=meta["quality"],
                     n=1,
                 )
-            except Exception as exc:
-                logger.debug("OpenAI image edit failed", exc_info=True)
+            except Exception:
+                logger.debug("OpenAI image edit request failed")
                 return error_response(
-                    error=f"OpenAI image editing failed: {exc}",
+                    error=_safe_provider_error("editing"),
                     error_type="api_error",
                     provider="openai",
                     model=tier_id,
@@ -319,7 +421,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
             # gpt-image-2 returns b64_json unconditionally and REJECTS
             # ``response_format`` as an unknown parameter. Don't send it.
             payload: Dict[str, Any] = {
-                "model": API_MODEL,
+                "model": api_model,
                 "prompt": prompt,
                 "size": size,
                 "n": 1,
@@ -328,10 +430,10 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
             try:
                 response = client.images.generate(**payload)
-            except Exception as exc:
-                logger.debug("OpenAI image generation failed", exc_info=True)
+            except Exception:
+                logger.debug("OpenAI image generation request failed")
                 return error_response(
-                    error=f"OpenAI image generation failed: {exc}",
+                    error=_safe_provider_error("generation"),
                     error_type="api_error",
                     provider="openai",
                     model=tier_id,
@@ -375,11 +477,11 @@ class OpenAIImageGenProvider(ImageGenProvider):
             # it expires — same rationale as the xAI provider (#26942).
             try:
                 saved_path = save_url_image(url, prefix=f"openai_{tier_id}")
-            except Exception as exc:
+            except Exception:
                 logger.warning(
-                    "OpenAI image URL %s could not be cached (%s); falling back to bare URL.",
-                    url,
-                    exc,
+                    "OpenAI image response from host %s could not be cached; "
+                    "falling back to bare URL.",
+                    _safe_url_host(url),
                 )
                 image_ref = url
             else:

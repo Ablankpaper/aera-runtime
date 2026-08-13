@@ -2220,6 +2220,51 @@ def _enable_recently_shipped_toolsets(
         enabled_toolsets.add(ts_key)
 
 
+def _profile_image_generation_enabled(config: dict) -> bool:
+    """Whether this Profile admits image generation by default.
+
+    An absent setting is deliberately enabled so existing conversations and
+    Profiles gain the capability without a per-session migration. A user-facing
+    Profile disable is the explicit opt-out; final agent policy still runs
+    after this helper in :func:`_get_platform_tools`.
+    """
+    image_cfg = config.get("image_gen") or {}
+    if not isinstance(image_cfg, dict):
+        return True
+    # Desktop's generic YAML writer persists boolean UI choices as strings.
+    # Treat its exact false literal as the same explicit Profile opt-out.
+    return image_cfg.get("enabled") not in {False, "false"}
+
+
+def _platform_default_includes_toolset(platform: str, toolset: str) -> bool:
+    """Keep intentionally narrow platform composites narrow.
+
+    Profile defaults recover tools that a saved configurable list accidentally
+    omits; they are not authority to add a tool to webhook/API/other surfaces
+    whose authored platform composite never carried it.
+    """
+    from toolsets import TOOLSETS, resolve_toolset
+
+    platform_info = PLATFORMS.get(platform)
+    default_toolset = (
+        platform_info["default_toolset"]
+        if platform_info
+        else f"hermes-{platform}"
+    )
+    expected_tools = set(resolve_toolset(toolset, include_registry=False))
+    # Plugin platforms are registry-backed and have no static TOOLSETS entry;
+    # use the registry view for those authored composites. Keep static
+    # platforms on their authored static view so unrelated registry overlays
+    # cannot widen their parity decision.
+    platform_tools = set(
+        resolve_toolset(
+            default_toolset,
+            include_registry=default_toolset not in TOOLSETS,
+        )
+    )
+    return bool(expected_tools and expected_tools.issubset(platform_tools))
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -2479,6 +2524,20 @@ def _get_platform_tools(
             enabled_toolsets.update(enabled_mcp_servers)
     else:
         enabled_toolsets.update(explicit_mcp_servers)
+
+    # Image generation is a Profile capability, not a per-session snapshot.
+    # Preserve the default across existing/new conversation toolset lists, but
+    # never widen a platform whose authored composite intentionally excludes it.
+    if _platform_default_includes_toolset(platform, "image_gen"):
+        if _profile_image_generation_enabled(config):
+            offered = (config.get("known_builtin_toolsets") or {}).get(platform)
+            declined = (
+                {str(ts) for ts in offered} if isinstance(offered, list) else set()
+            )
+            if "image_gen" not in declined:
+                enabled_toolsets.add("image_gen")
+        else:
+            enabled_toolsets.discard("image_gen")
 
     # Honor agent.disabled_toolsets from config.yaml — allows users to
     # globally suppress specific toolsets (e.g. "memory") across all

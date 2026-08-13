@@ -121,6 +121,58 @@ def auth_adapter():
 
 class TestStartRun:
     @pytest.mark.asyncio
+    async def test_start_passes_request_tool_policy_to_create_agent(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "draw",
+                        "aera_tool_policy": {
+                            "allowed": ["read_file"],
+                            "denied": ["image_generate"],
+                        },
+                    },
+                )
+                assert resp.status == 202
+                for _ in range(20):
+                    if mock_create.call_args is not None:
+                        break
+                    await asyncio.sleep(0.05)
+
+        policy = mock_create.call_args.kwargs["request_tool_policy"]
+        assert policy.allowed == frozenset({"read_file"})
+        assert policy.denied == frozenset({"image_generate"})
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_invalid_tool_policy_without_creating_run(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "draw",
+                        "aera_tool_policy": {
+                            "allowed": ["bad tool"],
+                            "denied": [],
+                        },
+                    },
+                )
+
+        assert resp.status == 400
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+        mock_create.assert_not_called()
+    @pytest.mark.asyncio
     async def test_start_returns_202(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

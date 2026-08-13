@@ -47,6 +47,7 @@ import itertools
 import json
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
+from dataclasses import dataclass
 from functools import wraps
 import logging
 import os
@@ -156,6 +157,49 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
 _COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+_REQUEST_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_MAX_REQUEST_TOOL_NAMES = 512
+
+
+@dataclass(frozen=True)
+class RequestToolPolicy:
+    """Immutable exact-name policy supplied by a trusted local orchestrator."""
+
+    allowed: frozenset[str]
+    denied: frozenset[str]
+
+
+def _parse_request_tool_policy(value: Any) -> RequestToolPolicy:
+    """Strictly parse the internal request-scoped Agent tool policy."""
+    if not isinstance(value, dict) or set(value) != {"allowed", "denied"}:
+        raise ValueError("aera_tool_policy must contain only allowed and denied")
+
+    parsed: dict[str, frozenset[str]] = {}
+    for field in ("allowed", "denied"):
+        raw = value.get(field)
+        if not isinstance(raw, list) or len(raw) > _MAX_REQUEST_TOOL_NAMES:
+            raise ValueError(f"aera_tool_policy.{field} must be a bounded array")
+        names: list[str] = []
+        for name in raw:
+            if not isinstance(name, str) or not _REQUEST_TOOL_NAME_RE.fullmatch(name):
+                raise ValueError(f"aera_tool_policy.{field} contains an invalid tool name")
+            names.append(name)
+        if len(set(names)) != len(names):
+            raise ValueError(f"aera_tool_policy.{field} contains duplicate tool names")
+        parsed[field] = frozenset(names)
+
+    if parsed["allowed"] & parsed["denied"]:
+        raise ValueError("aera_tool_policy allowed and denied entries overlap")
+    return RequestToolPolicy(
+        allowed=parsed["allowed"],
+        denied=parsed["denied"],
+    )
+
+
+def _request_tool_policy_from_body(body: Dict[str, Any]) -> Optional[RequestToolPolicy]:
+    if "aera_tool_policy" not in body:
+        return None
+    return _parse_request_tool_policy(body.get("aera_tool_policy"))
 
 
 class ThreadSafeAsyncQueue(asyncio.Queue):
@@ -2537,6 +2581,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
+        request_tool_policy: Optional[RequestToolPolicy] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -2835,6 +2880,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "fallback_model": fallback_model,
             "reasoning_config": reasoning_config,
             "gateway_session_key": gateway_session_key,
+            "request_tool_policy": request_tool_policy,
         }
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
@@ -3049,6 +3095,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
+                "request_tool_policy": True,
                 "approval_events": True,
                 "session_resources": True,
                 "model_options": True,
@@ -3896,6 +3943,11 @@ class APIServerAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
 
+        try:
+            request_tool_policy = _request_tool_policy_from_body(body)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return web.json_response(
@@ -4021,6 +4073,7 @@ class APIServerAdapter(BasePlatformAdapter):
             virtual_model=self._model_name,
             allow_bare_model=self._direct_model_requests,
         )
+        agent_overrides["request_tool_policy"] = request_tool_policy
         selection_error = self._request_route_conflict_error(
             session_id=session_id,
             gateway_session_key=gateway_session_key,
@@ -5066,6 +5119,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        try:
+            request_tool_policy = _request_tool_policy_from_body(body)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+
         raw_input = body.get("input")
         if raw_input is None:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
@@ -5163,6 +5221,7 @@ class APIServerAdapter(BasePlatformAdapter):
             virtual_model=self._model_name,
             allow_bare_model=self._direct_model_requests,
         )
+        agent_overrides["request_tool_policy"] = request_tool_policy
         selection_error = self._request_route_conflict_error(
             session_id=session_id,
             gateway_session_key=gateway_session_key,
@@ -5974,6 +6033,7 @@ class APIServerAdapter(BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None,
         route_source: str = "global",
         confirmed_runtime_lock: bool = False,
+        request_tool_policy: Optional[RequestToolPolicy] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -6031,6 +6091,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         route=route,
                         session_model=session_model,
                         confirmed_runtime_lock=confirmed_runtime_lock,
+                        request_tool_policy=request_tool_policy,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
@@ -6313,6 +6374,11 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
 
+        try:
+            request_tool_policy = _request_tool_policy_from_body(body)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+
         raw_input = body.get("input")
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
@@ -6458,6 +6524,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         requested_provider=agent_overrides.get("requested_provider"),
                         model_options=agent_overrides.get("model_options"),
                         route=route,
+                        request_tool_policy=request_tool_policy,
                     )
                 self._active_run_agents[run_id] = agent
 
