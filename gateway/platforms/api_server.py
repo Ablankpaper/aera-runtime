@@ -59,6 +59,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -299,6 +300,16 @@ _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "credential_pool",
     "max_tokens",
 )
+_AERA_MODEL_ROUTE_FIELDS = frozenset(
+    {"provider", "model", "base_url", "api_mode", "api_key"}
+)
+_AERA_MODEL_ROUTE_API_MODES = frozenset(
+    {
+        "chat_completions",
+        "codex_responses",
+        "anthropic_messages",
+    }
+)
 
 
 def _clean_request_string(value: Any) -> Optional[str]:
@@ -307,6 +318,93 @@ def _clean_request_string(value: Any) -> Optional[str]:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def _is_local_request_route_url(value: str) -> bool:
+    """Return whether a request route targets a loopback-only endpoint."""
+    try:
+        hostname = (urlsplit(value).hostname or "").strip().lower()
+    except (TypeError, ValueError):
+        return False
+    return hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _parse_aera_model_route(value: Any) -> Optional[Dict[str, Any]]:
+    """Validate one Main-authorized, request-scoped Aera model route.
+
+    The exact object is intentionally separate from permissive public
+    ``model_routes`` configuration. It may carry a short-lived API key, so
+    validation failures expose only a fixed error and never interpolate input.
+    """
+    if not isinstance(value, dict) or set(value) != _AERA_MODEL_ROUTE_FIELDS:
+        return None
+
+    def _text(field: str, maximum: int, *, allow_empty: bool = False) -> Optional[str]:
+        raw = value.get(field)
+        if not isinstance(raw, str) or len(raw.encode("utf-8")) > maximum:
+            return None
+        if any(ord(char) < 0x20 or ord(char) == 0x7F for char in raw):
+            return None
+        normalized = raw.strip()
+        if not normalized and not allow_empty:
+            return None
+        return normalized
+
+    provider = _text("provider", 128)
+    model = _text("model", 512)
+    base_url = _text("base_url", 2_048, allow_empty=True)
+    if provider is None or model is None or base_url is None:
+        return None
+
+    if base_url:
+        try:
+            parsed_url = urlsplit(base_url)
+            parsed_url.port
+        except (TypeError, ValueError):
+            return None
+        if (
+            parsed_url.scheme not in {"http", "https"}
+            or not parsed_url.hostname
+            or parsed_url.username is not None
+            or parsed_url.password is not None
+            or parsed_url.query
+            or parsed_url.fragment
+        ):
+            return None
+
+    raw_api_mode = value.get("api_mode")
+    if raw_api_mode is None:
+        api_mode = None
+    elif isinstance(raw_api_mode, str):
+        api_mode = raw_api_mode.strip().lower()
+        # Desktop Beta.26 persisted this earlier spelling in a few immutable
+        # segments. It is the same HTTP transport as codex_responses.
+        if api_mode == "responses":
+            api_mode = "codex_responses"
+        if api_mode not in _AERA_MODEL_ROUTE_API_MODES:
+            return None
+    else:
+        return None
+
+    raw_api_key = value.get("api_key")
+    if raw_api_key is None:
+        api_key = None
+    elif isinstance(raw_api_key, str):
+        if len(raw_api_key.encode("utf-8")) > 16_384 or any(
+            ord(char) < 0x20 or ord(char) == 0x7F for char in raw_api_key
+        ):
+            return None
+        api_key = raw_api_key.strip() or None
+    else:
+        return None
+
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "api_mode": api_mode,
+        "api_key": api_key,
+    }
 
 
 def _request_reasoning_config(model_options: Any) -> Optional[Dict[str, Any]]:
@@ -2582,6 +2680,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
         request_tool_policy: Optional[RequestToolPolicy] = None,
+        request_model_route: bool = False,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -2627,20 +2726,52 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         from hermes_cli.tools_config import _get_platform_tools
 
-        # Catch RuntimeError ONLY around this call, not the wider
-        # _create_agent()+run_conversation() span --
-        # _resolve_runtime_agent_kwargs() is the sole raiser of
-        # RuntimeError(format_runtime_provider_error(...)) for provider
-        # auth/credential failure.  Re-raising as
-        # _ProviderAuthResolutionError lets _run_agent() (and
-        # _handle_runs()) distinguish this from an unrelated RuntimeError
-        # elsewhere in the call graph.
-        try:
-            runtime_kwargs = _resolve_runtime_agent_kwargs()
-        except RuntimeError as exc:
-            raise _ProviderAuthResolutionError(str(exc)) from exc
+        request_model = _clean_request_string(requested_model)
+        request_provider = _clean_request_string(requested_provider)
+        route_model = _clean_request_string(route.get("model")) if isinstance(route, dict) else None
+        route_provider = _clean_request_string(route.get("provider")) if isinstance(route, dict) else None
+        route_api_key = _clean_request_string(route.get("api_key")) if isinstance(route, dict) else None
+        route_base_url = _clean_request_string(route.get("base_url")) if isinstance(route, dict) else None
+        route_api_mode = _clean_request_string(route.get("api_mode")) if isinstance(route, dict) else None
+
+        if request_model_route:
+            # Aera Main already resolved and authorized this complete route for
+            # the current turn.  It must remain usable even when the Runtime has
+            # no global model configured, and it must never borrow credentials
+            # or transport state from that unrelated global selection.
+            runtime_kwargs = {
+                "provider": route_provider or "",
+                # AIAgent's legacy no-key branch resolves the global provider
+                # when api_key is None. A request-scoped loopback route must
+                # bypass that branch; Hermes uses this placeholder for local
+                # servers that intentionally do not authenticate.
+                "api_key": (
+                    route_api_key
+                    or (
+                        "no-key-required"
+                        if _is_local_request_route_url(route_base_url or "")
+                        else None
+                    )
+                ),
+                "base_url": route_base_url or "",
+                "api_mode": route_api_mode,
+            }
+            model = route_model or ""
+        else:
+            # Catch RuntimeError ONLY around this call, not the wider
+            # _create_agent()+run_conversation() span --
+            # _resolve_runtime_agent_kwargs() is the sole raiser of
+            # RuntimeError(format_runtime_provider_error(...)) for provider
+            # auth/credential failure.  Re-raising as
+            # _ProviderAuthResolutionError lets _run_agent() (and
+            # _handle_runs()) distinguish this from an unrelated RuntimeError
+            # elsewhere in the call graph.
+            try:
+                runtime_kwargs = _resolve_runtime_agent_kwargs()
+            except RuntimeError as exc:
+                raise _ProviderAuthResolutionError(str(exc)) from exc
+            model = _resolve_gateway_model()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
         # cap), _resolve_runtime_agent_kwargs() falls through to the fallback
@@ -2658,13 +2789,6 @@ class APIServerAdapter(BasePlatformAdapter):
         if request_reasoning_config is not None:
             reasoning_config = request_reasoning_config
         request_service_tier = _request_service_tier(model_options)
-
-        request_model = _clean_request_string(requested_model)
-        request_provider = _clean_request_string(requested_provider)
-        route_model = _clean_request_string(route.get("model")) if isinstance(route, dict) else None
-        route_provider = _clean_request_string(route.get("provider")) if isinstance(route, dict) else None
-        route_api_key = _clean_request_string(route.get("api_key")) if isinstance(route, dict) else None
-        route_base_url = _clean_request_string(route.get("base_url")) if isinstance(route, dict) else None
 
         def _resolve_provider_runtime(
             provider: Optional[str],
@@ -2712,7 +2836,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_key = gateway_session_key or session_id
         session_row_model = _clean_request_string(session_model)
         session_override = None
-        if not confirmed_runtime_lock:
+        if not confirmed_runtime_lock and not request_model_route:
             session_override = self._session_model_override_for(session_key)
         # Model-string precedence delegates to the shared owner
         # hermes_cli.model_switch.resolve_effective_model (session /model
@@ -2737,7 +2861,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "api_server request selection skipped: session /model override wins for %s",
                     session_key or "",
                 )
-        elif session_row_model and not confirmed_runtime_lock:
+        elif session_row_model and not confirmed_runtime_lock and not request_model_route:
             # Session-persisted model (raw string that resolved to no route
             # alias).  Pins this session's turns ahead of per-request body
             # values — a session's chosen model is a standing selection,
@@ -2766,9 +2890,13 @@ class APIServerAdapter(BasePlatformAdapter):
             else:
                 effective_model = request_model or model
             current_provider = _clean_request_string(runtime_kwargs.get("provider"))
-            effective_provider = request_provider or route_provider or current_provider
+            effective_provider = (
+                route_provider
+                if request_model_route
+                else request_provider or route_provider or current_provider
+            )
             provider_runtime = None
-            if effective_provider and (
+            if not request_model_route and effective_provider and (
                 bool(request_provider or route_provider) or effective_model != model
             ):
                 provider_runtime = _resolve_provider_runtime(
@@ -2786,10 +2914,21 @@ class APIServerAdapter(BasePlatformAdapter):
             model = effective_model
             # Per-route explicit transport secrets/base URLs win within the
             # route contract after provider resolution.
-            if route_api_key:
-                runtime_kwargs["api_key"] = route_api_key
-            if route_base_url:
-                runtime_kwargs["base_url"] = route_base_url
+            if request_model_route:
+                runtime_kwargs["provider"] = effective_provider or ""
+                runtime_kwargs["api_key"] = route_api_key or runtime_kwargs.get(
+                    "api_key"
+                )
+                runtime_kwargs["base_url"] = route_base_url or ""
+                runtime_kwargs["api_mode"] = route_api_mode
+                runtime_kwargs["credential_pool"] = None
+                runtime_kwargs.pop("command", None)
+                runtime_kwargs.pop("args", None)
+            else:
+                if route_api_key:
+                    runtime_kwargs["api_key"] = route_api_key
+                if route_base_url:
+                    runtime_kwargs["base_url"] = route_base_url
             if route:
                 logger.debug(
                     "api_server request selection applied: model=%s provider=%s route_provider=%s request_provider=%s",
@@ -2857,7 +2996,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = (
             None
-            if confirmed_runtime_lock
+            if confirmed_runtime_lock or request_model_route
             else GatewayRunner._load_fallback_model()
         )
 
@@ -2892,6 +3031,8 @@ class APIServerAdapter(BasePlatformAdapter):
             "route_source": (
                 "session_model_lock"
                 if confirmed_runtime_lock
+                else "request_model_route"
+                if request_model_route
                 else "session_model_override"
                 if session_override
                 else "raw_request"
@@ -3103,6 +3244,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat_streaming": True,
                 "session_fork": True,
                 "session_model_lock": True,
+                "request_model_route": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -4064,23 +4206,39 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", self._model_name)
         created = int(time.time())
 
+        request_model_route = "aera_model_route" in body
+        route = None
+        if request_model_route:
+            route = _parse_aera_model_route(body.get("aera_model_route"))
+            if route is None:
+                return web.json_response(
+                    _openai_error(
+                        "Invalid request model route.",
+                        code="invalid_request_model_route",
+                    ),
+                    status=400,
+                )
+
         # Per-client model routing: if the requested model matches a
         # configured model_routes alias, this request's agent is created
         # with that route's model/provider instead of the global default.
-        route = self._resolve_route(model_name)
+        if route is None:
+            route = self._resolve_route(model_name)
         agent_overrides = _request_agent_overrides(
             body,
             virtual_model=self._model_name,
             allow_bare_model=self._direct_model_requests,
         )
         agent_overrides["request_tool_policy"] = request_tool_policy
-        selection_error = self._request_route_conflict_error(
-            session_id=session_id,
-            gateway_session_key=gateway_session_key,
-            requested_model=agent_overrides.get("requested_model"),
-            requested_provider=agent_overrides.get("requested_provider"),
-            route=route,
-        )
+        selection_error = None
+        if not request_model_route:
+            selection_error = self._request_route_conflict_error(
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+                requested_model=agent_overrides.get("requested_model"),
+                requested_provider=agent_overrides.get("requested_provider"),
+                route=route,
+            )
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
 
@@ -4169,6 +4327,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
                 route=route,
+                request_model_route=request_model_route,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -4190,29 +4349,32 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
                 route=route,
+                request_model_route=request_model_route,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+                keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream", "aera_model_route"],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                safe_error = _redact_api_error_text(e)
+                logger.error("Error running agent for chat completions: %s", safe_error)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(f"Internal server error: {safe_error}", err_type="server_error"),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_completion()
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                safe_error = _redact_api_error_text(e)
+                logger.error("Error running agent for chat completions: %s", safe_error)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(f"Internal server error: {safe_error}", err_type="server_error"),
                     status=500,
                 )
 
@@ -4405,7 +4567,9 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as exc:
                 agent_error = exc
                 logger.error(
-                    "Agent task %s failed during SSE streaming: %s", completion_id, exc
+                    "Agent task %s failed during SSE streaming: %s",
+                    completion_id,
+                    _redact_api_error_text(exc),
                 )
 
             # Inspect the result dict for a flagged (non-exception) failure.
@@ -4416,6 +4580,8 @@ class APIServerAdapter(BasePlatformAdapter):
             if agent_error is not None:
                 is_failed = True
                 err_msg = err_msg or str(agent_error)
+            if err_msg:
+                err_msg = _redact_api_error_text(err_msg)
 
             # Decide finish_reason, matching the non-streaming logic: "length"
             # for truncation, "error" for failure, "stop" for normal completion.
@@ -6034,6 +6200,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route_source: str = "global",
         confirmed_runtime_lock: bool = False,
         request_tool_policy: Optional[RequestToolPolicy] = None,
+        request_model_route: bool = False,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -6092,6 +6259,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_model=session_model,
                         confirmed_runtime_lock=confirmed_runtime_lock,
                         request_tool_policy=request_tool_policy,
+                        request_model_route=request_model_route,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
