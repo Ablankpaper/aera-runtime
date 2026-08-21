@@ -41,6 +41,28 @@ class TestGetDefaultHermesRoot:
         assert get_default_hermes_root() == tmp_path / ".hermes"
 
 
+    def test_native_named_profile_returns_native_root(self, tmp_path, monkeypatch):
+        """A named profile under the native root can enumerate sibling profiles."""
+        native_root = tmp_path / ".hermes"
+        profile = native_root / "profiles" / "researcher"
+        profile.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        assert get_default_hermes_root() == native_root
+
+    def test_staging_home_below_native_root_is_not_collapsed(
+        self, tmp_path, monkeypatch
+    ):
+        """Aera's staged execution root must remain isolated from durable state."""
+        native_root = tmp_path / ".hermes"
+        staging_home = native_root / ".aera-profile-staging" / "operation-1" / "home"
+        staging_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(staging_home))
+
+        assert get_default_hermes_root() == staging_home
+
 
 
 
@@ -53,6 +75,15 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
+
+    def test_custom_non_profile_home_remains_its_own_root(self, tmp_path, monkeypatch):
+        """A custom deployment root is not broadened to an unrelated parent."""
+        custom_root = tmp_path / "opt" / "data"
+        custom_root.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(custom_root))
+
+        assert get_default_hermes_root() == custom_root
 
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""

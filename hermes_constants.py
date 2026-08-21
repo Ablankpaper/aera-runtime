@@ -173,6 +173,10 @@ def get_default_hermes_root() -> Path:
     Works both for standard (``~/.hermes/profiles/coder``) and Docker
     (``/opt/data/profiles/coder``) layouts.
 
+    Other nested homes remain isolated roots. In particular, a temporary
+    ``~/.hermes/.aera-profile-staging/<operation>/home`` must not resolve to
+    the durable ``~/.hermes`` root.
+
     Import-safe — no dependencies beyond stdlib.
     """
     native_home = _get_platform_default_hermes_home()
@@ -180,19 +184,20 @@ def get_default_hermes_root() -> Path:
     if not env_home:
         return native_home
     env_path = Path(env_home)
-    try:
-        env_path.resolve().relative_to(native_home.resolve())
-        # HERMES_HOME is under ~/.hermes (normal or profile mode)
+    resolved_env = env_path.resolve()
+    resolved_native = native_home.resolve()
+    if resolved_env == resolved_native:
         return native_home
-    except ValueError:
-        pass
 
-    # Docker / custom deployment.
-    # Check if this is a profile path: <root>/profiles/<name>
-    # If the immediate parent dir is named "profiles", the root is
-    # the grandparent — this covers Docker profiles correctly.
-    if env_path.parent.name == "profiles":
-        return env_path.parent.parent
+    # Only the explicit <root>/profiles/<name> shape is a profile-level
+    # operation root. Other homes below the native root (notably Aera's
+    # .aera-profile-staging/<operation>/home) are isolated execution roots and
+    # must never be broadened to the durable native root.
+    if resolved_env.parent.name == "profiles":
+        if resolved_env.parent.parent == resolved_native:
+            return native_home
+        if env_path.parent.name == "profiles":
+            return env_path.parent.parent
 
     # Not a profile path — HERMES_HOME itself is the root
     return env_path
