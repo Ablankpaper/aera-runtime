@@ -14,6 +14,7 @@ Tests cover:
 
 import asyncio
 import json
+import logging
 import os
 import stat
 import sys
@@ -903,6 +904,7 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["request_tool_policy"] is True
+            assert data["features"]["request_model_route"] is True
             assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
@@ -1367,6 +1369,214 @@ class TestChatCompletionsEndpoint:
             assert "call_orphan_1" not in body
             assert '"status": "running"' not in body
             assert '"status": "completed"' not in body
+
+
+class TestAeraRequestModelRoute:
+    ROUTE = {
+        "provider": "custom:petoi",
+        "model": "gpt-5.6-sol",
+        "base_url": "https://api.petoi.cn/v1",
+        "api_mode": "codex_responses",
+        "api_key": "sk-request-only",
+    }
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_passes_valid_route_as_request_authority(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "body-model",
+                        "provider": "body-provider",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "aera_model_route": self.ROUTE,
+                    },
+                )
+
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs["route"] == self.ROUTE
+        assert mock_run.call_args.kwargs["request_model_route"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route",
+        [
+            None,
+            {"provider": "openai"},
+            {
+                **ROUTE,
+                "unexpected": "field",
+            },
+            {
+                **ROUTE,
+                "provider": "openai\nforged",
+            },
+            {
+                **ROUTE,
+                "base_url": "file:///tmp/provider",
+            },
+            {
+                **ROUTE,
+                "api_mode": "unknown_mode",
+            },
+            {
+                **ROUTE,
+                "api_mode": "bedrock_converse",
+            },
+            {
+                **ROUTE,
+                "api_mode": "codex_app_server",
+            },
+        ],
+    )
+    async def test_chat_completions_rejects_invalid_route_without_dispatch(
+        self, adapter, route
+    ):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-5.6-sol",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "aera_model_route": route,
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "invalid_request_model_route"
+        mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invalid_route_does_not_expose_api_key(self, adapter, caplog):
+        secret = "sk-never-log-this-request-route-secret"
+        app = _create_app(adapter)
+        with caplog.at_level(logging.DEBUG):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-5.6-sol",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "aera_model_route": {
+                            **self.ROUTE,
+                            "api_key": secret,
+                            "unexpected": "field",
+                        },
+                    },
+                )
+                response_text = await resp.text()
+
+        assert resp.status == 400
+        assert secret not in response_text
+        assert secret not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_legacy_responses_mode_is_normalized_before_dispatch(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-5.6-sol",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "aera_model_route": {
+                            **self.ROUTE,
+                            "api_mode": "responses",
+                        },
+                    },
+                )
+
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs["route"]["api_mode"] == "codex_responses"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_downstream_failure_redacts_route_api_key(
+        self, adapter, caplog, stream
+    ):
+        secret = self.ROUTE["api_key"]
+        app = _create_app(adapter)
+        with caplog.at_level(logging.ERROR):
+            async with TestClient(TestServer(app)) as cli:
+                with patch.object(
+                    adapter,
+                    "_run_agent",
+                    new_callable=AsyncMock,
+                    side_effect=RuntimeError(
+                        f"upstream rejected OPENAI_API_KEY={secret}"
+                    ),
+                ):
+                    resp = await cli.post(
+                        "/v1/chat/completions",
+                        json={
+                            "model": "gpt-5.6-sol",
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "stream": stream,
+                            "aera_model_route": self.ROUTE,
+                        },
+                    )
+                    response_text = await resp.text()
+
+        assert resp.status == (200 if stream else 500)
+        assert secret not in response_text
+        assert secret not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_does_not_reuse_a_different_request_route(
+        self, adapter
+    ):
+        calls = []
+
+        async def _run_agent(**kwargs):
+            provider = kwargs["route"]["provider"]
+            calls.append(provider)
+            return (
+                {"final_response": provider, "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        app = _create_app(adapter)
+        idempotency_key = f"aera-route-{uuid.uuid4()}"
+        route_b = {
+            **self.ROUTE,
+            "provider": "custom:other",
+            "model": "other-model",
+            "base_url": "https://other.example/v1",
+            "api_key": "sk-request-b",
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_run_agent):
+                responses = []
+                for route in (self.ROUTE, route_b):
+                    resp = await cli.post(
+                        "/v1/chat/completions",
+                        headers={"Idempotency-Key": idempotency_key},
+                        json={
+                            "model": "same-body-model",
+                            "messages": [{"role": "user", "content": "same"}],
+                            "aera_model_route": route,
+                        },
+                    )
+                    assert resp.status == 200
+                    responses.append(await resp.json())
+
+        assert calls == ["custom:petoi", "custom:other"]
+        assert responses[0]["choices"][0]["message"]["content"] == "custom:petoi"
+        assert responses[1]["choices"][0]["message"]["content"] == "custom:other"
 
 
 # ---------------------------------------------------------------------------
@@ -2685,6 +2895,136 @@ class TestModelRoutesAgentCreation:
         assert captured["model"] == "session/override-model"
         assert captured["provider"] == "sessionprov"
         assert captured["api_key"] == "sk-session"
+
+
+class TestAeraRequestModelRouteAgentCreation:
+    def test_request_route_beats_session_override_and_uses_exact_transport(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(
+            adapter,
+            "_session_model_override_for",
+            lambda *_: {
+                "model": "session/model",
+                "provider": "session-provider",
+                "api_key": "sk-session",
+                "base_url": "https://session.example/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+
+        adapter._create_agent(
+            session_id="s1",
+            route={
+                "provider": "custom:petoi",
+                "model": "gpt-5.6-sol",
+                "base_url": "https://api.petoi.cn/v1",
+                "api_mode": "codex_responses",
+                "api_key": "sk-request-only",
+            },
+            request_model_route=True,
+        )
+
+        assert captured["model"] == "gpt-5.6-sol"
+        assert captured["provider"] == "custom:petoi"
+        assert captured["api_key"] == "sk-request-only"
+        assert captured["base_url"] == "https://api.petoi.cn/v1"
+        assert captured["api_mode"] == "codex_responses"
+        assert captured["fallback_model"] is None
+
+    def test_null_request_api_key_never_borrows_global_credentials(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(
+            session_id="s1",
+            route={
+                "provider": "custom:local",
+                "model": "local-model",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_mode": "chat_completions",
+                "api_key": None,
+            },
+            request_model_route=True,
+        )
+
+        assert captured["api_key"] == "no-key-required"
+        assert captured["credential_pool"] is None
+
+    def test_complete_request_route_does_not_require_global_model_config(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: (_ for _ in ()).throw(RuntimeError("global model unavailable")),
+        )
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(
+            session_id="s1",
+            route={
+                "provider": "custom:petoi",
+                "model": "gpt-5.6-sol",
+                "base_url": "https://api.petoi.cn/v1",
+                "api_mode": "codex_responses",
+                "api_key": "sk-request-only",
+            },
+            request_model_route=True,
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "gpt-5.6-sol"
+
+    def test_request_route_provider_beats_ordinary_body_provider(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(
+            session_id="s1",
+            requested_model="body-model",
+            requested_provider="body-provider",
+            route={
+                "provider": "custom:petoi",
+                "model": "gpt-5.6-sol",
+                "base_url": "https://api.petoi.cn/v1",
+                "api_mode": "codex_responses",
+                "api_key": "sk-request-only",
+            },
+            request_model_route=True,
+        )
+
+        assert captured["model"] == "gpt-5.6-sol"
+        assert captured["provider"] == "custom:petoi"
 
 
 # ---------------------------------------------------------------------------
