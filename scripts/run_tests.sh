@@ -126,6 +126,9 @@ done
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
 # No credential var can leak — you'd have to explicitly add it here.
+# Keep loopback-only test servers local even when the host's HTTP client honors
+# a macOS system proxy. Without this explicit bypass, httpx can send requests
+# for 127.0.0.1 through the configured proxy despite env -i.
 echo "▶ running per-file parallel test suite via run_tests_parallel.py"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
 
@@ -144,6 +147,8 @@ exec env -i \
   PATH="$PATH" \
   HOME="$HOME" \
   ${WIN_ENV[@]+"${WIN_ENV[@]}"} \
+  NO_PROXY="127.0.0.1,localhost,::1" \
+  no_proxy="127.0.0.1,localhost,::1" \
   TZ=UTC \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
